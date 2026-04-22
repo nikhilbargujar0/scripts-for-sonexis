@@ -81,6 +81,8 @@ class LanguageReport:
     switching_frequency: float = 0.0 # language switches per minute of audio
     scripts: List[str] = field(default_factory=list)
     switching_score: float = 0.0     # normalized [0, 1] score for dataset filtering
+    switching_pattern: Dict[str, int] = field(default_factory=dict)
+    # switching_pattern: e.g. {"hi→en": 3, "en→hi": 2} — observed transition counts
     language_segments: List[LanguageSegment] = field(default_factory=list)
     # Backward-compat: per_segment kept as flat list (text + language only).
     per_segment: List[Dict] = field(default_factory=list)
@@ -99,6 +101,7 @@ class LanguageReport:
             "multilingual_flag": bool(self.multilingual_flag),
             "switching_frequency": round(float(self.switching_frequency), 4),
             "switching_score": round(float(self.switching_score), 4),
+            "switching_pattern": dict(self.switching_pattern),
             "scripts": list(self.scripts),
             "language_segments": [s.to_dict() for s in self.language_segments],
             "per_segment": self.per_segment,
@@ -242,6 +245,23 @@ def _compute_switching_frequency(
     return round(switches / (total_duration_s / 60.0), 4)
 
 
+def _compute_switching_pattern(
+    language_segments: List[LanguageSegment],
+) -> Dict[str, int]:
+    """Count directional language transitions.
+
+    Returns a dict like ``{"hi→en": 3, "en→hi": 2}`` that shows which
+    direction code-switching flows and how often.  Only consecutive segments
+    with different languages are counted.
+    """
+    pattern: Dict[str, int] = {}
+    for a, b in zip(language_segments, language_segments[1:]):
+        if a.language != b.language:
+            key = f"{a.language}\u2192{b.language}"
+            pattern[key] = pattern.get(key, 0) + 1
+    return pattern
+
+
 def detect_language(
     full_text: str,
     segments_text: Optional[List[str]] = None,
@@ -354,6 +374,7 @@ def detect_language(
     switching_score = float(min(1.0, switching_freq / 10.0))
     multilingual_flag = len(seen_langs) >= 2
     code_switching = multilingual_flag or len(scripts) >= 2
+    switching_pattern = _compute_switching_pattern(language_segments)
 
     return LanguageReport(
         primary_language=primary,
@@ -363,6 +384,7 @@ def detect_language(
         multilingual_flag=bool(multilingual_flag),
         switching_frequency=switching_freq,
         switching_score=switching_score,
+        switching_pattern=switching_pattern,
         scripts=scripts,
         language_segments=language_segments,
         per_segment=per_segment,

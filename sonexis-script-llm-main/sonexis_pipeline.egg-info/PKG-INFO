@@ -1,0 +1,50 @@
+Metadata-Version: 2.4
+Name: sonexis-pipeline
+Version: 3.0.0
+Summary: Fully offline conversational-audio -> structured dataset pipeline
+Author: Sonexis contributors
+License: MIT
+Keywords: asr,speech,diarisation,whisper,hinglish,dataset
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: faster-whisper>=1.0.3
+Requires-Dist: librosa>=0.10.2
+Requires-Dist: soundfile>=0.12.1
+Requires-Dist: pydub>=0.25.1
+Requires-Dist: noisereduce>=3.0.2
+Requires-Dist: webrtcvad-wheels>=2.0.14
+Requires-Dist: scikit-learn>=1.4.2
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: scipy>=1.11.0
+Requires-Dist: fasttext-wheel>=0.9.2
+Requires-Dist: tqdm>=4.66.0
+Provides-Extra: parquet
+Requires-Dist: pandas>=2.2.0; extra == "parquet"
+Requires-Dist: pyarrow>=15.0.0; extra == "parquet"
+Provides-Extra: pyannote
+Requires-Dist: pyannote.audio>=3.1.1; extra == "pyannote"
+Requires-Dist: torch>=2.0.0; extra == "pyannote"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pandas>=2.2.0; extra == "dev"
+Requires-Dist: pyarrow>=15.0.0; extra == "dev"
+
+# Sonexis Conversational Audio Dataset Pipeline
+
+Offline Python pipeline for turning messy two-speaker conversations into
+training-ready audio datasets with rich annotations, manifests, validation, and
+interaction metrics.
+
+Primary CLI:
+
+```bash
+python main.py --input ./data --output ./dataset --mode both
+```
+
+Model loading is local by default. Populate `./models` first:
+
+```bash
+python download_models.py --model-dir ./models --whisper-size small
+```
+
+See [pipeline/README.md](pipeline/README.md) and [OFFLINE_SETUP.md](OFFLINE_SETUP.md).

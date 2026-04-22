@@ -7,6 +7,7 @@ Can be constructed from:
   - kwargs (direct instantiation)
   - a plain dict (e.g. loaded from YAML)
   - argparse.Namespace (from CLI)
+  - load_config() — parses sys.argv / explicit argv, optionally merging a YAML file
 
 Choosing output_mode:
   "both"             → write speaker_separated WAVs + mono mixed (recommended)
@@ -21,8 +22,9 @@ Choosing input_type:
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import asdict, dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -67,12 +69,21 @@ class PipelineConfig:
     max_duration_mismatch_s: float = 60.0  # warn above this
     min_audio_duration_s: float = 1.0
 
+    # ── I/O paths (populated by load_config / run_pipeline) ──────────
+    input_dir: str = ""
+    output_dir: str = ""
+
     # ── misc ──────────────────────────────────────────────────────────
     fail_fast: bool = False
     verbose: bool = False
 
     # ── interaction metadata ──────────────────────────────────────────
     interruption_threshold_s: float = 0.5  # overlaps shorter than this = interruption
+
+    # ── alignment ─────────────────────────────────────────────────────
+    alignment_enabled: bool = True          # run cross-correlation alignment for speaker_pair
+    alignment_max_offset_s: float = 5.0    # max plausible clock drift to search
+    alignment_min_confidence: float = 0.10  # below this → skip alignment, log warning
 
     # ── performance / speed ───────────────────────────────────────────
     # num_workers: parallel session workers (>1 → ProcessPoolExecutor)
@@ -123,4 +134,97 @@ class PipelineConfig:
         # offline_mode may arrive as string "true"/"false" from CLI
         if "offline_mode" in d and isinstance(d["offline_mode"], str):
             d["offline_mode"] = d["offline_mode"].lower() in ("true", "1", "yes")
+        # Populate I/O paths from argparse "input" / "output" keys.
+        if "input" in d:
+            d.setdefault("input_dir", d["input"])
+        if "output" in d:
+            d.setdefault("output_dir", d["output"])
         return cls.from_dict(d)
+
+
+# ---------------------------------------------------------------------------
+#  Public loader — the recommended programmatic entry point
+# ---------------------------------------------------------------------------
+
+def load_config(
+    argv: Optional[List[str]] = None,
+    yaml_path: Optional[str] = None,
+) -> PipelineConfig:
+    """Parse CLI arguments and/or a YAML config file and return PipelineConfig.
+
+    Priority (highest wins):
+        1. Explicit CLI arguments supplied via *argv* or sys.argv[1:]
+        2. Values from *yaml_path* (or ``--config`` CLI flag)
+        3. PipelineConfig defaults
+
+    ``config.input_dir`` and ``config.output_dir`` are populated from
+    ``--input`` / ``--output`` so that ``run_pipeline(config)`` works without
+    passing extra arguments::
+
+        config = load_config()
+        run_pipeline(config)
+
+    Parameters
+    ----------
+    argv:
+        Explicit argument list. Defaults to ``sys.argv[1:]``.
+    yaml_path:
+        Path to a YAML file whose keys map to PipelineConfig fields.
+        Also honoured via ``--config <path>`` in *argv*.
+    """
+    import argparse as _argparse
+
+    _argv: List[str] = list(argv) if argv is not None else sys.argv[1:]
+
+    # ── Step 1: extract --config before the full parse ──────────────
+    _pre = _argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--config", default=None)
+    _pre_args, _ = _pre.parse_known_args(_argv)
+    _yaml_path = yaml_path or _pre_args.config
+
+    # ── Step 2: load YAML base (lowest priority) ─────────────────────
+    yaml_base: dict = {}
+    if _yaml_path:
+        try:
+            import yaml as _yaml  # optional dependency
+            with open(_yaml_path, "r", encoding="utf-8") as _f:
+                yaml_base = _yaml.safe_load(_f) or {}
+        except ImportError:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "PyYAML not installed; ignoring --config / yaml_path"
+            )
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning("load_config: YAML load failed: %s", _e)
+
+    # ── Step 3: build base config from YAML ──────────────────────────
+    cfg = PipelineConfig.from_dict(yaml_base)
+
+    # ── Step 4: full CLI parse (deferred import avoids circular) ─────
+    # pipeline.main imports pipeline.config, so we defer the import to
+    # *function call time* (not module import time) to break the cycle.
+    try:
+        from pipeline.main import _parse_args  # type: ignore[attr-defined]
+    except ImportError:
+        # Fallback for editable-install / different working directory.
+        from .main import _parse_args  # type: ignore[attr-defined]
+
+    _full_args = _parse_args(_argv)
+    _cli_cfg = PipelineConfig.from_namespace(_full_args)
+
+    # Merge: CLI values override YAML defaults for fields that differ from default.
+    _defaults = PipelineConfig()
+    for _field in PipelineConfig.__dataclass_fields__:
+        _cli_val = getattr(_cli_cfg, _field)
+        _default_val = getattr(_defaults, _field)
+        if _cli_val != _default_val:
+            setattr(cfg, _field, _cli_val)
+
+    # Always take input_dir / output_dir from CLI if provided.
+    if _cli_cfg.input_dir:
+        cfg.input_dir = _cli_cfg.input_dir
+    if _cli_cfg.output_dir:
+        cfg.output_dir = _cli_cfg.output_dir
+
+    return cfg

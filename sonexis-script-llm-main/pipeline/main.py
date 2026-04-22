@@ -270,6 +270,64 @@ def _speaker_pair_alignment_report(pair: SpeakerPairAudio, max_mismatch_s: float
     }
 
 
+def _try_align_speaker_pair(
+    speaker_wavs: Dict[str, np.ndarray],
+    sample_rate: int,
+    cfg: PipelineConfig,
+) -> Tuple[Dict[str, np.ndarray], Dict]:
+    """Attempt cross-correlation alignment of two speaker waveforms.
+
+    Returns the (possibly realigned) speaker_wavs dict and an alignment
+    report dict suitable for inclusion in the validation / processing blocks.
+    Falls back to shared_zero_start silently when:
+      - alignment is disabled in config
+      - fewer than 2 speakers
+      - AlignmentError (low confidence, signals too short, etc.)
+    """
+    labels = list(speaker_wavs.keys())
+    fallback_report = {
+        "method": "shared_zero_start",
+        "offset_samples": 0,
+        "offset_s": 0.0,
+        "confidence": None,
+        "skipped": True,
+    }
+
+    if not getattr(cfg, "alignment_enabled", True) or len(labels) < 2:
+        return speaker_wavs, fallback_report
+
+    try:
+        from .steps.alignment import AlignmentError, align_speaker_pair
+    except ImportError:
+        log.debug("alignment module unavailable; skipping")
+        return speaker_wavs, fallback_report
+
+    l1, l2 = labels[0], labels[1]
+    try:
+        result = align_speaker_pair(
+            speaker_wavs[l1],
+            speaker_wavs[l2],
+            sample_rate=sample_rate,
+            max_offset_s=getattr(cfg, "alignment_max_offset_s", 5.0),
+            min_confidence=getattr(cfg, "alignment_min_confidence", 0.10),
+        )
+        aligned = dict(speaker_wavs)
+        aligned[l1] = result.wav1
+        aligned[l2] = result.wav2
+        report = result.to_dict()
+        report["skipped"] = False
+        log.info(
+            "  alignment: offset=%+.3fs  confidence=%.3f",
+            result.offset_s, result.confidence,
+        )
+        return aligned, report
+    except Exception as exc:  # AlignmentError or unexpected
+        log.warning("  alignment skipped (%s); using shared_zero_start", exc)
+        fallback_report["skipped"] = True
+        fallback_report["skip_reason"] = str(exc)
+        return speaker_wavs, fallback_report
+
+
 def _processing_report(
     cfg: PipelineConfig,
     requested_diarisation_backend: str,
@@ -613,14 +671,26 @@ def _process_speaker_pair(
         log.warning("  quality errors: %s", qreport.errors)
     if qreport.warnings:
         log.warning("  quality warnings: %s", qreport.warnings)
-    alignment = _speaker_pair_alignment_report(pair, cfg.max_duration_mismatch_s)
+    legacy_alignment = _speaker_pair_alignment_report(pair, cfg.max_duration_mismatch_s)
 
     pcfg = PreprocessConfig(denoise=cfg.denoise)
     speaker_wavs: Dict[str, np.ndarray] = {
         label: preprocess(audio.waveform, audio.sample_rate, pcfg)
         for label, audio in pair.speakers.items()
     }
-    mixed_wav = preprocess(pair.mixed.waveform, pair.mixed.sample_rate, pcfg)
+
+    # ── Cross-correlation alignment ────────────────────────────────────────
+    # Attempt to correct clock drift between separately-recorded speakers.
+    # On failure, fall back silently to the shared_zero_start assumption.
+    speaker_wavs, xcorr_alignment = _try_align_speaker_pair(
+        speaker_wavs, pair.mixed.sample_rate, cfg
+    )
+    # Merge xcorr results into the legacy alignment report.
+    alignment = {**legacy_alignment, "xcorr": xcorr_alignment}
+
+    # Rebuild the mixed waveform from the (potentially realigned) speakers.
+    from .steps.preprocessing import preprocess_speaker_pair as _pp_pair
+    _, mixed_wav = _pp_pair(speaker_wavs, pair.mixed.sample_rate, pcfg)
 
     # Parallel VAD on both speakers simultaneously (2× faster than sequential).
     speaker_vad = _vad_parallel(speaker_wavs, pair.mixed.sample_rate, cfg.vad_backend)
