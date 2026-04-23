@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sonexis.local/schema/dataset_schema.json",
+  "title": "Sonexis conversational dataset record",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "input_mode",
+    "session_name",
+    "metadata",
+    "transcript",
+    "speaker_segmentation",
+    "validation",
+    "processing"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "input_mode": {"type": "string"},
+    "session_name": {"type": "string"},
+    "metadata": {
+      "type": "object",
+      "required": ["audio", "language", "speakers", "conversation", "interaction"],
+      "additionalProperties": true,
+      "properties": {
+        "audio": {"type": "object", "additionalProperties": true},
+        "language": {"type": "object", "additionalProperties": true},
+        "speakers": {"type": "object", "additionalProperties": true},
+        "conversation": {"type": "object", "additionalProperties": true},
+        "interaction": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "turn_count": {"type": "integer", "minimum": 0},
+            "interruptions": {"type": "integer", "minimum": 0},
+            "overlap_duration": {"type": "number", "minimum": 0},
+            "dominance": {"type": "object", "additionalProperties": true}
+          }
+        }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "required": ["raw"],
+      "additionalProperties": true,
+      "properties": {"raw": {"type": "string"}}
+    },
+    "speaker_segmentation": {"type": "array"},
+    "validation": {
+      "type": "object",
+      "required": ["passed", "issue_count", "issues", "checks"],
+      "additionalProperties": true,
+      "properties": {
+        "passed": {"type": "boolean"},
+        "issue_count": {"type": "integer", "minimum": 0},
+        "issues": {"type": "array"},
+        "checks": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "offline_mode": {"type": "boolean"},
+        "random_seed": {"type": "integer"}
+      }
+    }
+  }
+}

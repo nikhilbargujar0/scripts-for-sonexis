@@ -1,0 +1,2 @@
+-r pipeline/requirements.txt
+jsonschema>=4.0.0
