@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pipeline.utils.metadata_fields import inferred_field, provided_field
+from pipeline.utils.metadata_fields import inferred_field, measured_field, provided_field
 
 
 class MetadataFieldTests(unittest.TestCase):
@@ -23,6 +23,13 @@ class MetadataFieldTests(unittest.TestCase):
         self.assertEqual(field["value"], "female")
         self.assertEqual(field["source"], "user_provided")
         self.assertEqual(field["confidence"], 1.0)
+
+    def test_measured_field_carries_method(self) -> None:
+        field = measured_field(7300, 0.94, method="spectral_rolloff_95")
+        self.assertEqual(field["value"], 7300)
+        self.assertEqual(field["source"], "measured")
+        self.assertEqual(field["confidence"], 0.94)
+        self.assertEqual(field["method"], "spectral_rolloff_95")
 
 
 if __name__ == "__main__":  # pragma: no cover

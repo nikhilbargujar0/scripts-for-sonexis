@@ -61,10 +61,20 @@ def _flatten_for_parquet(record: Dict) -> Dict:
         "file_sha1": file.get("sha1"),
         "duration_s": audio.get("duration_s"),
         "sample_rate": audio.get("sample_rate"),
+        "sample_rate_hz": audio.get("sample_rate_hz"),
+        "processed_sample_rate_hz": audio.get("processed_sample_rate_hz"),
+        "bit_depth": audio.get("bit_depth"),
+        "channels": audio.get("channels"),
+        "codec": audio.get("codec"),
+        "container_format": audio.get("container_format"),
         "rms_db": audio.get("rms_db"),
         "snr_db_estimate": audio.get("snr_db_estimate"),
         "rt60_s_estimate": audio.get("rt60_s_estimate"),
         "spectral_centroid_khz": audio.get("spectral_centroid_khz"),
+        "effective_bandwidth_hz": _nested_value(audio, "effective_bandwidth_hz"),
+        "effective_bandwidth_confidence": _nested_conf(audio, "effective_bandwidth_hz"),
+        "lufs": _nested_value(audio, "lufs"),
+        "lufs_confidence": _nested_conf(audio, "lufs"),
         # confidence-wrapped inferred fields
         "environment": _nested_value(audio, "environment"),
         "environment_confidence": _nested_conf(audio, "environment"),
@@ -93,6 +103,8 @@ def _flatten_for_parquet(record: Dict) -> Dict:
         "topic_keywords": json.dumps(
             conv.get("topic_keywords", []), ensure_ascii=False
         ),
+        "domain": _nested_value(conv, "domain"),
+        "domain_confidence": _nested_conf(conv, "domain"),
         "intents": json.dumps(conv.get("intents", []), ensure_ascii=False),
         "mean_quality_score": quality.get("mean_quality_score"),
         "duration_weighted_quality_score":
@@ -125,6 +137,10 @@ def _flatten_for_parquet(record: Dict) -> Dict:
         "validation_issues_json": json.dumps(
             validation.get("issues", []), ensure_ascii=False
         ),
+        "annotations_json": json.dumps(record.get("annotations", {}), ensure_ascii=False),
+        "dataset_purpose_json": json.dumps(record.get("dataset_purpose", {}), ensure_ascii=False),
+        "quality_targets_json": json.dumps(record.get("quality_targets", {}), ensure_ascii=False),
+        "quality_metrics_json": json.dumps(record.get("quality_metrics", {}), ensure_ascii=False),
         "input_alignment_json": json.dumps(
             record.get("input_alignment", {}), ensure_ascii=False
         ),

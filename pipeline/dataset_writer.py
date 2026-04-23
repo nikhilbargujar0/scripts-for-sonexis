@@ -45,6 +45,7 @@ except ImportError:
 
 from .diarisation import SpeakerTurn
 from .monologue_extractor import Monologue
+from .products import export_products
 
 
 # ── schema declaration ──────────────────────────────────────────────────────
@@ -509,6 +510,14 @@ class DatasetWriter:
         record["artifacts"] = dict(written)
         ann_path = self.write_annotation(session_name, record)
         written["annotation"] = ann_path
+
+        # 6b. Product-specific exports derived from the canonical record.
+        product_artifacts = export_products(record, str(self.root))
+        if product_artifacts:
+            written.update(product_artifacts)
+            record["artifacts"] = dict(written)
+            ann_path = self.write_annotation(session_name, record)
+            written["annotation"] = ann_path
 
         # 7. Manifests
         self.append_utterances_manifest(

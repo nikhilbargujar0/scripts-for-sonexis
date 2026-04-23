@@ -19,6 +19,8 @@ fasttext-wheel>=0.9.2
 # CLI + utilities
 tqdm>=4.66.0
 jsonschema>=4.0.0
+deepgram-sdk>=3.7.0
+google-cloud-speech>=2.31.0
 
 # Model hub (used by download_models.py only, not at inference time)
 huggingface_hub>=0.22.0

@@ -20,7 +20,9 @@ from typing import Dict, List, Optional
 from .diarisation import SpeakerTurn
 from .language_detection import LanguageReport
 from .monologue_extractor import Monologue
+from .steps.language import build_code_switch_report
 from .transcription import Transcript, normalise_transcript
+from .utils.dataset_purpose import infer_dataset_purpose
 
 
 SCHEMA_VERSION = "3.0.0"
@@ -157,6 +159,75 @@ def _build_speaker_transcripts(
     return {spk: " ".join(texts) for spk, texts in chunks.items()}
 
 
+def _build_annotations(
+    transcript: Transcript,
+    turns: List[SpeakerTurn],
+    language: LanguageReport,
+    monologue: Optional[Monologue],
+    monologues: Optional[Dict[str, Optional[Monologue]]],
+    validation: Optional[Dict],
+) -> Dict:
+    return {
+        "transcript_available": bool(str(transcript.text or "").strip()),
+        "speaker_turns_available": bool(turns),
+        "timestamps_available": bool(transcript.segments),
+        "language_segments_available": bool(
+            language.language_segments or language.per_segment
+        ),
+        "monologue_available": bool(monologue) or (
+            any(monologues.values()) if monologues else False
+        ),
+        "validation_report_available": True,
+    }
+
+
+def _default_quality_metrics() -> Dict:
+    return {
+        "estimated_word_accuracy": None,
+        "estimated_timestamp_accuracy": None,
+        "estimated_code_switch_accuracy": None,
+        "benchmark_evaluated": False,
+        "human_review_completed": False,
+    }
+
+
+def _default_human_review(required: bool = True) -> Dict:
+    return {
+        "required": bool(required),
+        "status": "pending",
+        "review_stage": "transcript_review",
+        "reviewer_id": None,
+        "notes": None,
+    }
+
+
+def _default_code_switch(language_meta: Dict) -> Dict:
+    report = build_code_switch_report(language_meta.get("segments") or language_meta.get("language_segments") or [])
+    dominant_languages: List[str] = []
+    for segment in report.get("segments", []):
+        lang = segment.get("lang")
+        if lang and lang not in dominant_languages:
+            dominant_languages.append(lang)
+    return {
+        "detected": bool(report.get("switch_count")),
+        "dominant_languages": dominant_languages,
+        "switch_count": int(report.get("switch_count") or 0),
+        "switch_patterns": list(report.get("patterns") or []),
+        "review_required": bool(report.get("switch_count")),
+    }
+
+
+def _default_premium_processing() -> Dict:
+    return {
+        "pipeline_mode": "offline_standard",
+        "paid_api_used": False,
+        "engines_used": ["whisper_local"],
+        "consensus_applied": False,
+        "timestamp_refinement_applied": False,
+        "human_review_required": True,
+    }
+
+
 def build_record(
     *,
     audio_path: str,
@@ -183,6 +254,18 @@ def build_record(
     generated_at: Optional[str] = None,
     input_alignment: Optional[Dict] = None,
     mono_mix: Optional[Dict] = None,
+    quality_targets: Optional[Dict] = None,
+    quality_metrics: Optional[Dict] = None,
+    human_review: Optional[Dict] = None,
+    code_switch: Optional[Dict] = None,
+    transcript_candidates: Optional[List[Dict]] = None,
+    routing_decision: Optional[Dict] = None,
+    timestamp_method: Optional[str] = None,
+    timestamp_confidence: Optional[float] = None,
+    timestamp_refinement: Optional[Dict] = None,
+    tts_suitability: Optional[Dict] = None,
+    dataset_products: Optional[List[str]] = None,
+    premium_processing: Optional[Dict] = None,
     # perf
     skip_sha1: bool = False,
 ) -> Dict:
@@ -191,6 +274,14 @@ def build_record(
     timeline = _build_timeline(turns, speaker_map)
     conv_transcript = _build_conversation_transcript(transcript, turns, speaker_map)
     spk_transcripts = _build_speaker_transcripts(conv_transcript)
+    annotations = _build_annotations(
+        transcript,
+        turns,
+        language,
+        monologue,
+        monologues,
+        validation,
+    )
 
     # Inject per-speaker language into speaker_meta (non-destructive copy)
     enriched_speaker_meta: Dict[str, Dict] = {}
@@ -199,6 +290,8 @@ def build_record(
         if speaker_lang and spk_id in speaker_lang:
             entry["language"] = speaker_lang[spk_id].to_dict()
         enriched_speaker_meta[spk_id] = entry
+
+    language_meta = _language_aliases(language)
 
     record: Dict = {
         "schema_version": SCHEMA_VERSION,
@@ -213,11 +306,12 @@ def build_record(
         ],
         "metadata": {
             "audio": audio_meta,
-            "language": _language_aliases(language),
+            "language": language_meta,
             "speakers": enriched_speaker_meta,
             "conversation": conversation_meta,
             "interaction": _interaction_aliases(interaction_meta),
         },
+        "audio_metadata": audio_meta,
         "transcript": {
             "raw": transcript.text,
             "normalised": normalise_transcript(transcript.text),
@@ -237,12 +331,31 @@ def build_record(
         },
         "monologue_sample": monologue.to_dict() if monologue else None,
         "quality": quality or {},
+        "annotations": annotations,
+        "quality_targets": quality_targets or {
+            "word_accuracy_target": 0.98,
+            "timestamp_accuracy_target": 0.98,
+            "code_switch_accuracy_target": 0.98,
+            "human_review_required": True,
+        },
+        "quality_metrics": quality_metrics or _default_quality_metrics(),
+        "human_review": human_review or _default_human_review(),
+        "code_switch": code_switch or _default_code_switch(language_meta),
         "validation": validation or {"passed": True, "issue_count": 0, "issues": [], "checks": {}},
         "processing": processing or {},
         "artifacts": {},
         "input_alignment": input_alignment or {},
         "mono_mix": mono_mix or {},
+        "transcript_candidates": list(transcript_candidates or []),
+        "routing_decision": routing_decision or {},
+        "timestamp_method": timestamp_method,
+        "timestamp_confidence": round(float(timestamp_confidence), 4) if timestamp_confidence is not None else None,
+        "timestamp_refinement": timestamp_refinement or {},
+        "tts_suitability": tts_suitability or {"eligible": False, "reasons": ["review_not_final"], "confidence": 0.3},
+        "dataset_products": list(dataset_products or []),
+        "premium_processing": premium_processing or _default_premium_processing(),
     }
+    record["dataset_purpose"] = infer_dataset_purpose(record)
 
     # speaker_pair mode: add source-file provenance
     if input_mode in ("speaker_pair", "stereo") and speaker_sources:

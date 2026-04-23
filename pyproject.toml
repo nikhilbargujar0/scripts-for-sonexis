@@ -14,6 +14,8 @@ keywords = ["asr", "speech", "diarisation", "whisper", "hinglish", "dataset"]
 
 dependencies = [
     "faster-whisper>=1.0.3",
+    "deepgram-sdk>=3.7.0",
+    "google-cloud-speech>=2.31.0",
     "librosa>=0.10.2",
     "soundfile>=0.12.1",
     "pydub>=0.25.1",
@@ -35,7 +37,16 @@ pyannote = ["pyannote.audio>=3.1.1", "torch>=2.0.0"]
 sonexis-pipeline = "scripts.main:main"
 
 [tool.setuptools]
-packages = ["pipeline", "pipeline.steps", "pipeline.processors", "pipeline.utils", "scripts"]
+packages = [
+    "pipeline",
+    "pipeline.steps",
+    "pipeline.processors",
+    "pipeline.utils",
+    "pipeline.premium",
+    "pipeline.premium.adapters",
+    "pipeline.products",
+    "scripts",
+]
 
 [tool.setuptools.package-data]
 pipeline = ["*.md", "*.txt"]

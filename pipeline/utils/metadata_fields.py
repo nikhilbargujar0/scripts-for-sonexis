@@ -29,3 +29,19 @@ def provided_field(value: Any, source: str = "user_provided") -> Dict:
         "confidence": 1.0,
         "source": source,
     }
+
+
+def measured_field(
+    value: Any,
+    confidence: float,
+    *,
+    method: str,
+    source: str = "measured",
+) -> Dict:
+    """Wrap measured or estimated numeric metadata with provenance."""
+    return {
+        "value": value,
+        "confidence": round(float(confidence), 3),
+        "source": source,
+        "method": method,
+    }

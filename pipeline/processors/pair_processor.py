@@ -12,14 +12,28 @@ from ..config import PipelineConfig
 from ..dataset_writer import DatasetWriter
 from ..diarisation import SpeakerTurn, diarise_from_speaker_vad
 from ..language_detection import FastTextLID
+from ..metadata_extraction import extract_audio_metadata
 from ..output_formatter import build_record
 from ..preprocessing import PreprocessConfig, preprocess
 from ..processors.downstream import build_asr_cfg, run_downstream
+from ..premium.adapters.whisper_local import WhisperLocalAdapter
+from ..premium.alignment_router import refine_timestamps
+from ..premium.asr_router import PremiumASRRouter
+from ..premium.consensus import choose_consensus
+from ..premium.quality import (
+    build_code_switch_metadata,
+    build_premium_processing,
+    build_quality_metrics,
+    build_quality_targets,
+    build_tts_suitability,
+)
+from ..premium.review import build_human_review
 from ..quality_checker import check_speaker_pair
 from ..roman_indic_classifier import RomanIndicClassifier
 from ..steps.alignment import AlignmentError, align_pair
 from ..steps.audio_processing import mix_mono_with_metadata
 from ..transcription import Transcriber
+from ..utils.premium_routing import normalize_recording_condition
 from ..validation import build_validation_report
 from ..vad import VADConfig, detect_speech
 
@@ -152,6 +166,21 @@ def _processing_report(cfg: PipelineConfig) -> Dict:
     }
 
 
+def _dataset_products(cfg: PipelineConfig) -> List[str]:
+    products = list(getattr(cfg, "export_products", []) or [])
+    if cfg.output_mode in ("both", "mono"):
+        products.append("mono_mixed")
+    if cfg.output_mode in ("both", "speaker_separated"):
+        products.append("speaker_separated")
+    seen = set()
+    out: List[str] = []
+    for product in products:
+        if product and product not in seen:
+            seen.add(product)
+            out.append(product)
+    return out
+
+
 def process_speaker_pair(
     pair: SpeakerPairAudio,
     transcriber: Transcriber,
@@ -192,6 +221,46 @@ def process_speaker_pair(
 
     mixed_wav, mono_mix = mix_mono_with_metadata(speaker_wavs.values())
     asr_cfg = build_asr_cfg(cfg, model_dir)
+    preview_audio_meta = extract_audio_metadata(mixed_wav, pair.mixed.sample_rate, mixed_speech)
+    pipeline_mode = getattr(cfg, "pipeline_mode", "offline_standard")
+    transcript_override = None
+    transcript_candidates = []
+    routing_decision = None
+    consensus_result = None
+    alignment_result = None
+    selected_candidate = None
+    if pipeline_mode == "premium_accuracy":
+        router = PremiumASRRouter(
+            cfg=cfg,
+            whisper_adapter=WhisperLocalAdapter(
+                transcriber=transcriber,
+                asr_cfg=asr_cfg,
+                fasttext_lid=ft_lid,
+                roman_indic_classifier=classifier,
+            ),
+            fasttext_lid=ft_lid,
+            roman_indic_classifier=classifier,
+        )
+        routed = router.run(
+            mixed_wav,
+            pair.mixed.sample_rate,
+            audio_meta=preview_audio_meta,
+            overlap_duration_s=expected_overlap_s,
+        )
+        transcript_candidates = list(routed["candidates"])
+        routing_decision = routed["routing_decision"]
+        selected_candidate, consensus_result = choose_consensus(
+            transcript_candidates,
+            audio_condition=normalize_recording_condition(preview_audio_meta),
+        )
+        alignment_result = refine_timestamps(
+            selected_candidate,
+            wav=mixed_wav,
+            sample_rate=pair.mixed.sample_rate,
+            cfg=cfg,
+        )
+        transcript_override = alignment_result.transcript
+
     (
         transcript,
         lang_report,
@@ -214,7 +283,52 @@ def process_speaker_pair(
         asr_cfg,
         speaker_map=speaker_map,
         cfg=cfg,
+        source_audios=(
+            [pair.mixed]
+            if pair.recording_type == "stereo"
+            else list(pair.speakers.values())
+        ),
+        transcript_override=transcript_override,
     )
+
+    code_switch = build_code_switch_metadata(
+        language_report=lang_report.to_dict(),
+        candidate=selected_candidate,
+    )
+    quality_targets = build_quality_targets(cfg)
+    quality_metrics = build_quality_metrics()
+    human_review = build_human_review(
+        pipeline_mode=pipeline_mode,
+        require_human_review=bool(getattr(cfg, "require_human_review", True)),
+        consensus=consensus_result,
+        alignment=alignment_result,
+        routing=routing_decision,
+        audio_condition=normalize_recording_condition(audio_meta),
+        code_switch=code_switch,
+    )
+    tts_suitability = build_tts_suitability(
+        record_or_meta=audio_meta,
+        review_status=str(human_review.get("status") or "pending"),
+        overlap_duration_s=expected_overlap_s,
+        speaker_count=len(speaker_meta),
+    )
+    if routing_decision is not None and consensus_result is not None and alignment_result is not None:
+        premium_processing = build_premium_processing(
+            pipeline_mode=pipeline_mode,
+            routing=routing_decision,
+            consensus=consensus_result,
+            alignment=alignment_result,
+            human_review_required=bool(human_review.get("required")),
+        )
+    else:
+        premium_processing = {
+            "pipeline_mode": pipeline_mode,
+            "paid_api_used": False,
+            "engines_used": ["whisper_local"],
+            "consensus_applied": False,
+            "timestamp_refinement_applied": False,
+            "human_review_required": bool(human_review.get("required")),
+        }
 
     speaker_sources: Dict[str, Dict] = {}
     for pipeline_label, human_label in speaker_map.items():
@@ -266,10 +380,25 @@ def process_speaker_pair(
         speaker_map=speaker_map,
         source_files=source_paths,
         generated_at=cfg.generated_at,
+        quality_targets=quality_targets,
+        quality_metrics=quality_metrics,
         skip_sha1=cfg.skip_sha1,
         input_alignment=alignment,
         mono_mix=mono_mix,
     )
+    record["human_review"] = human_review
+    record["code_switch"] = code_switch
+    record["tts_suitability"] = tts_suitability
+    record["dataset_products"] = _dataset_products(cfg)
+    record["premium_processing"] = premium_processing
+    if transcript_candidates:
+        record["transcript_candidates"] = [candidate.to_dict() for candidate in transcript_candidates]
+    if routing_decision is not None:
+        record["routing_decision"] = routing_decision.to_dict()
+    if alignment_result is not None:
+        record["timestamp_method"] = alignment_result.timestamp_method
+        record["timestamp_confidence"] = round(float(alignment_result.timestamp_confidence), 4)
+        record["timestamp_refinement"] = alignment_result.to_dict()
     if cfg.include_runtime_metrics:
         record["processing_time_s"] = round(time.time() - t0, 3)
 

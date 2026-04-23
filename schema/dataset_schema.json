@@ -9,12 +9,89 @@
     "input_mode",
     "session_name",
     "metadata",
+    "audio_metadata",
+    "annotations",
+    "dataset_purpose",
+    "dataset_products",
+    "quality_targets",
+    "quality_metrics",
+    "human_review",
+    "code_switch",
     "transcript",
+    "transcript_candidates",
+    "routing_decision",
+    "timestamp_method",
+    "timestamp_confidence",
+    "timestamp_refinement",
+    "tts_suitability",
     "speaker_segmentation",
     "validation",
-    "processing"
+    "processing",
+    "premium_processing"
   ],
   "additionalProperties": true,
+  "$defs": {
+    "wrapped_field": {
+      "type": "object",
+      "required": ["value", "confidence", "source"],
+      "additionalProperties": true,
+      "properties": {
+        "value": {
+          "type": ["string", "number", "integer", "boolean", "null"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {"type": "string"}
+      }
+    },
+    "measured_field": {
+      "allOf": [
+        {"$ref": "#/$defs/wrapped_field"},
+        {
+          "type": "object",
+          "required": ["method"],
+          "properties": {
+            "method": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "speaker_metadata": {
+      "type": "object",
+      "required": ["speaker_id", "accent", "region", "dialect"],
+      "additionalProperties": true,
+      "properties": {
+        "speaker_id": {"type": "string"},
+        "accent": {"$ref": "#/$defs/wrapped_field"},
+        "region": {"$ref": "#/$defs/wrapped_field"},
+        "dialect": {"$ref": "#/$defs/wrapped_field"}
+      }
+    },
+    "audio_metadata": {
+      "type": "object",
+      "required": [
+        "sample_rate_hz",
+        "processed_sample_rate_hz",
+        "channels",
+        "effective_bandwidth_hz",
+        "lufs"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "sample_rate_hz": {"type": "integer", "minimum": 1},
+        "processed_sample_rate_hz": {"type": "integer", "minimum": 1},
+        "bit_depth": {"type": ["integer", "null"], "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "codec": {"type": ["string", "null"]},
+        "container_format": {"type": ["string", "null"]},
+        "effective_bandwidth_hz": {"$ref": "#/$defs/measured_field"},
+        "lufs": {"$ref": "#/$defs/measured_field"}
+      }
+    }
+  },
   "properties": {
     "schema_version": {"type": "string"},
     "generated_at": {"type": "string"},
@@ -22,15 +99,120 @@
     "session_name": {"type": "string"},
     "input_alignment": {"type": "object", "additionalProperties": true},
     "mono_mix": {"type": "object", "additionalProperties": true},
+    "audio_metadata": {"$ref": "#/$defs/audio_metadata"},
+    "annotations": {
+      "type": "object",
+      "required": [
+        "transcript_available",
+        "speaker_turns_available",
+        "timestamps_available",
+        "language_segments_available",
+        "monologue_available",
+        "validation_report_available"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "transcript_available": {"type": "boolean"},
+        "speaker_turns_available": {"type": "boolean"},
+        "timestamps_available": {"type": "boolean"},
+        "language_segments_available": {"type": "boolean"},
+        "monologue_available": {"type": "boolean"},
+        "validation_report_available": {"type": "boolean"}
+      }
+    },
+    "dataset_purpose": {
+      "type": "object",
+      "required": ["primary", "secondary", "not_recommended_for"],
+      "additionalProperties": true,
+      "properties": {
+        "primary": {"type": "array", "items": {"type": "string"}},
+        "secondary": {"type": "array", "items": {"type": "string"}},
+        "not_recommended_for": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "quality_targets": {
+      "type": "object",
+      "required": [
+        "word_accuracy_target",
+        "timestamp_accuracy_target",
+        "code_switch_accuracy_target",
+        "human_review_required"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "word_accuracy_target": {"type": "number", "minimum": 0, "maximum": 1},
+        "timestamp_accuracy_target": {"type": "number", "minimum": 0, "maximum": 1},
+        "code_switch_accuracy_target": {"type": "number", "minimum": 0, "maximum": 1},
+        "human_review_required": {"type": "boolean"}
+      }
+    },
+    "quality_metrics": {
+      "type": "object",
+      "required": [
+        "estimated_word_accuracy",
+        "estimated_timestamp_accuracy",
+        "estimated_code_switch_accuracy",
+        "benchmark_evaluated",
+        "human_review_completed"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "estimated_word_accuracy": {"type": ["number", "null"]},
+        "estimated_timestamp_accuracy": {"type": ["number", "null"]},
+        "estimated_code_switch_accuracy": {"type": ["number", "null"]},
+        "benchmark_evaluated": {"type": "boolean"},
+        "human_review_completed": {"type": "boolean"}
+      }
+    },
+    "human_review": {
+      "type": "object",
+      "required": ["required", "status", "review_stage", "reviewer_id", "notes"],
+      "additionalProperties": true,
+      "properties": {
+        "required": {"type": "boolean"},
+        "status": {"type": "string"},
+        "review_stage": {"type": "string"},
+        "reviewer_id": {"type": ["string", "null"]},
+        "notes": {"type": ["string", "null"]}
+      }
+    },
+    "code_switch": {
+      "type": "object",
+      "required": [
+        "detected",
+        "dominant_languages",
+        "switch_count",
+        "switch_patterns",
+        "review_required"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "detected": {"type": "boolean"},
+        "dominant_languages": {"type": "array", "items": {"type": "string"}},
+        "switch_count": {"type": "integer", "minimum": 0},
+        "switch_patterns": {"type": "array", "items": {"type": "string"}},
+        "review_required": {"type": "boolean"}
+      }
+    },
     "metadata": {
       "type": "object",
       "required": ["audio", "language", "speakers", "conversation", "interaction"],
       "additionalProperties": true,
       "properties": {
-        "audio": {"type": "object", "additionalProperties": true},
+        "audio": {"$ref": "#/$defs/audio_metadata"},
         "language": {"type": "object", "additionalProperties": true},
-        "speakers": {"type": "object", "additionalProperties": true},
-        "conversation": {"type": "object", "additionalProperties": true},
+        "speakers": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/speaker_metadata"}
+        },
+        "conversation": {
+          "type": "object",
+          "required": ["domain"],
+          "additionalProperties": true,
+          "properties": {
+            "domain": {"$ref": "#/$defs/wrapped_field"}
+          }
+        },
         "interaction": {
           "type": "object",
           "additionalProperties": true,
@@ -47,7 +229,48 @@
       "type": "object",
       "required": ["raw"],
       "additionalProperties": true,
-      "properties": {"raw": {"type": "string"}}
+      "properties": {
+        "raw": {"type": "string"}
+      }
+    },
+    "transcript_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["engine", "provider", "paid_api", "transcript", "timing_source"],
+        "additionalProperties": true,
+        "properties": {
+          "engine": {"type": "string"},
+          "provider": {"type": "string"},
+          "paid_api": {"type": "boolean"},
+          "transcript": {"type": "object", "additionalProperties": true},
+          "timing_source": {"type": "string"}
+        }
+      }
+    },
+    "routing_decision": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "timestamp_method": {"type": ["string", "null"]},
+    "timestamp_confidence": {"type": ["number", "null"]},
+    "timestamp_refinement": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "tts_suitability": {
+      "type": "object",
+      "required": ["eligible", "reasons", "confidence"],
+      "additionalProperties": true,
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "dataset_products": {
+      "type": "array",
+      "items": {"type": "string"}
     },
     "speaker_segmentation": {"type": "array"},
     "validation": {
@@ -67,6 +290,26 @@
       "properties": {
         "offline_mode": {"type": "boolean"},
         "random_seed": {"type": "integer"}
+      }
+    },
+    "premium_processing": {
+      "type": "object",
+      "required": [
+        "pipeline_mode",
+        "paid_api_used",
+        "engines_used",
+        "consensus_applied",
+        "timestamp_refinement_applied",
+        "human_review_required"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline_mode": {"type": "string"},
+        "paid_api_used": {"type": "boolean"},
+        "engines_used": {"type": "array", "items": {"type": "string"}},
+        "consensus_applied": {"type": "boolean"},
+        "timestamp_refinement_applied": {"type": "boolean"},
+        "human_review_required": {"type": "boolean"}
       }
     }
   }

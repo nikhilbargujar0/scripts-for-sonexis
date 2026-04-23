@@ -7,7 +7,13 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .config import PipelineConfig
 from .language_detection import FastTextLID
 from .offline import fasttext_local_path
-from .processors.downstream import build_asr_cfg, load_user_metadata_file, normalise_user_metadata_block
+from .processors.downstream import (
+    CONVERSATION_METADATA_FIELDS,
+    SPEAKER_METADATA_FIELDS,
+    build_asr_cfg,
+    load_user_metadata_file,
+    normalise_user_metadata_block,
+)
 from .roman_indic_classifier import RomanIndicClassifier
 from .transcription import Transcriber
 
@@ -33,13 +39,28 @@ def _normalise_config(config: PipelineConfig | Dict | None) -> PipelineConfig:
         raise ValueError("metadata_depth must be 'basic' or 'full'")
     if cfg.metadata_file and not cfg.user_metadata:
         cfg.user_metadata = load_user_metadata_file(cfg.metadata_file)
+    if isinstance(cfg.allow_paid_apis, bool):
+        cfg.premium.setdefault("allow_paid_apis", cfg.allow_paid_apis)
+    if getattr(cfg, "pipeline_mode", "offline_standard") == "premium_accuracy":
+        cfg.premium["enabled"] = True
     cli_values = {
         field: getattr(cfg, field)
-        for field in ("dialect", "region", "gender", "age_band", "recording_context", "consent_status")
+        for field in SPEAKER_METADATA_FIELDS
     }
-    cli_block = normalise_user_metadata_block(cli_values, "api_config")
+    cli_block = normalise_user_metadata_block(cli_values, "api_config", SPEAKER_METADATA_FIELDS)
     if cli_block:
         cfg.user_metadata.setdefault("*", {}).update(cli_block)
+    conversation_values = {
+        field: getattr(cfg, field)
+        for field in CONVERSATION_METADATA_FIELDS
+    }
+    conversation_block = normalise_user_metadata_block(
+        conversation_values,
+        "api_config",
+        CONVERSATION_METADATA_FIELDS,
+    )
+    if conversation_block:
+        cfg.user_metadata.setdefault("__conversation__", {}).update(conversation_block)
     return cfg
 
 

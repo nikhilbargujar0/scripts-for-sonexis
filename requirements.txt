@@ -1,2 +1,4 @@
 -r pipeline/requirements.txt
 jsonschema>=4.0.0
+deepgram-sdk>=3.7.0
+google-cloud-speech>=2.31.0

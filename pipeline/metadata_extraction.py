@@ -25,7 +25,7 @@ import numpy as np
 
 from .diarisation import SpeakerTurn
 from .transcription import Transcript, TranscriptSegment
-from .utils.metadata_fields import inferred_field
+from .utils.metadata_fields import inferred_field, measured_field
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +122,36 @@ def _spectral_centroid_khz(wav: np.ndarray, sr: int) -> float:
         return 0.0
 
 
+def _effective_bandwidth_hz(wav: np.ndarray, sr: int) -> Tuple[int, float]:
+    try:
+        import librosa
+
+        rolloff = librosa.feature.spectral_rolloff(
+            y=wav,
+            sr=sr,
+            roll_percent=0.95,
+        )[0]
+        if rolloff.size == 0:
+            return 0, 0.2
+        value = int(round(float(np.median(rolloff))))
+        confidence = 0.9 if value > 0 else 0.2
+        return value, confidence
+    except Exception:
+        return 0, 0.2
+
+
+def _lufs_estimate(wav: np.ndarray) -> Tuple[float, float, str]:
+    """Return (value, confidence, method) using a safe local fallback.
+
+    We intentionally avoid claiming BS.1770 compliance when that library is
+    not present. The fallback is still useful for relative filtering.
+    """
+    rms_db = _rms_db(wav)
+    if rms_db <= -120.0:
+        return -70.0, 0.3, "rms_fallback_estimate"
+    return round(rms_db - 0.69, 2), 0.45, "rms_fallback_estimate"
+
+
 def _classify_environment(snr_db: float, rt60_s: float) -> Tuple[str, float]:
     """Return (environment_label, confidence).
 
@@ -184,21 +214,43 @@ def extract_audio_metadata(
     wav: np.ndarray,
     sample_rate: int,
     speech_segments: List[Segment],
+    source_info: Optional[Dict] = None,
 ) -> Dict:
+    source_info = dict(source_info or {})
     rms_db = _rms_db(wav)
     snr_db = _estimate_snr_db(wav, speech_segments, sample_rate)
     rt60 = _reverb_estimate(wav, sample_rate)
     centroid = _spectral_centroid_khz(wav, sample_rate)
+    bandwidth_hz, bandwidth_conf = _effective_bandwidth_hz(wav, sample_rate)
+    lufs_value, lufs_conf, lufs_method = _lufs_estimate(wav)
     env_value, env_conf = _classify_environment(snr_db, rt60)
     noise_value, noise_conf = _classify_noise_level(snr_db)
     device_value, device_conf = _classify_device(centroid, sample_rate)
     return {
         "duration_s": round(len(wav) / sample_rate, 3),
         "sample_rate": int(sample_rate),
+        "sample_rate_hz": int(source_info.get("sample_rate_hz") or sample_rate),
+        "processed_sample_rate_hz": int(
+            source_info.get("processed_sample_rate_hz") or sample_rate
+        ),
+        "bit_depth": source_info.get("bit_depth"),
+        "channels": int(source_info.get("channels") or 1),
+        "codec": source_info.get("codec"),
+        "container_format": source_info.get("container_format"),
         "rms_db": round(rms_db, 2),
         "snr_db_estimate": round(snr_db, 2),
         "rt60_s_estimate": round(rt60, 3),
         "spectral_centroid_khz": round(centroid, 3),
+        "effective_bandwidth_hz": measured_field(
+            bandwidth_hz,
+            bandwidth_conf,
+            method="spectral_rolloff_95",
+        ),
+        "lufs": measured_field(
+            lufs_value,
+            lufs_conf,
+            method=lufs_method,
+        ),
         "environment": {
             **inferred_field(env_value, env_conf),
             "method": "snr_rt60_heuristic",
@@ -369,6 +421,7 @@ def extract_speaker_metadata(
             speech_ratio = round(total_speech_s / total_audio_duration_s, 4)
 
         result[speaker] = {
+            "speaker_id": speaker,
             "label": (speaker_labels or {}).get(speaker, speaker),
             "total_speaking_time_s": round(total_speech_s, 3),
             "word_count": n_words,
@@ -387,6 +440,14 @@ def extract_speaker_metadata(
             "accent": {
                 **inferred_field(accent_value, accent_conf),
                 "method": "language_script_proxy",
+            },
+            "region": {
+                **inferred_field("unknown", 0.0),
+                "method": "not_available_without_user_metadata",
+            },
+            "dialect": {
+                **inferred_field("unknown", 0.0),
+                "method": "not_available_without_user_metadata",
             },
             "turn_count": len(per_speaker_turns.get(speaker, [])),
             "speech_ratio": speech_ratio,
@@ -473,6 +534,16 @@ INTENT_RULES: List[Tuple[str, List[str]]] = [
     ("transaction", [r"\b(buy|purchase|order|payment|kharid|paisa|price|kitna)\b"]),
 ]
 
+DOMAIN_RULES: List[Tuple[str, List[str]]] = [
+    ("customer_support", [r"\b(support|help|issue|complaint|ticket|refund|madad|sahayata)\b"]),
+    ("sales", [r"\b(buy|purchase|order|pricing|quote|demo|kharid|kitna)\b"]),
+    ("onboarding", [r"\b(onboarding|setup|sign up|signup|register|login|account setup)\b"]),
+    ("healthcare", [r"\b(doctor|clinic|hospital|medicine|appointment|symptom|health)\b"]),
+    ("education", [r"\b(student|teacher|class|course|lesson|school|college|exam)\b"]),
+    ("finance", [r"\b(bank|loan|emi|credit|debit|invoice|payment|balance|policy)\b"]),
+    ("travel", [r"\b(flight|hotel|booking|travel|trip|train|bus|cab|ticket)\b"]),
+]
+
 
 def _classify_intent(text: str) -> List[str]:
     hits: List[str] = []
@@ -481,6 +552,26 @@ def _classify_intent(text: str) -> List[str]:
         if any(re.search(p, lower) for p in patterns):
             hits.append(label)
     return hits or ["informational"]
+
+
+def _infer_domain(full_text: str, keywords: List[str], intents: List[str]) -> Tuple[str, float]:
+    lower = full_text.lower()
+    matched: List[str] = []
+    for label, patterns in DOMAIN_RULES:
+        if any(re.search(pattern, lower) for pattern in patterns):
+            matched.append(label)
+
+    if len(matched) >= 2:
+        return "mixed", 0.55
+    if len(matched) == 1:
+        return matched[0], 0.68
+    if "support_inquiry" in intents or "complaint" in intents:
+        return "customer_support", 0.58
+    if "transaction" in intents:
+        return "sales", 0.56
+    if keywords:
+        return "casual", 0.42
+    return "unknown", 0.2
 
 
 def extract_conversation_metadata(
@@ -493,6 +584,7 @@ def extract_conversation_metadata(
     keywords = _extract_keywords(seg_texts)
     full_text = " ".join(seg_texts)
     intents = _classify_intent(full_text)
+    domain_value, domain_conf = _infer_domain(full_text, keywords, intents)
 
     # Aggregate per-segment quality signals so a dataset curator can filter
     # at the conversation level without reading every transcript segment.
@@ -531,6 +623,10 @@ def extract_conversation_metadata(
         "total_speech_time_s": round(sum(turn_durations), 3),
         "topic": inferred_field(keywords[0] if keywords else "unknown", 0.58 if keywords else 0.2),
         "sub_topic": inferred_field(keywords[1] if len(keywords) > 1 else "unknown", 0.46 if len(keywords) > 1 else 0.2),
+        "domain": {
+            **inferred_field(domain_value, domain_conf),
+            "method": "keyword_intent_heuristic",
+        },
         "topic_keywords": keywords,
         "intents": intents,
         "quality": quality_summary,

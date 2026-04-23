@@ -22,7 +22,7 @@ Choosing input_type:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -99,13 +99,52 @@ class PipelineConfig:
     metadata_depth: str = "full"       # basic | full
     metadata_file: Optional[str] = None
     ask_metadata: bool = True
+    accent: Optional[str] = None
     dialect: Optional[str] = None
     region: Optional[str] = None
+    domain: Optional[str] = None
     gender: Optional[str] = None
     age_band: Optional[str] = None
     recording_context: Optional[str] = None
     consent_status: Optional[str] = None
     user_metadata: Dict = field(default_factory=dict)
+    transcript_accuracy_target: float = 0.98
+    timestamp_accuracy_target: float = 0.98
+    metadata_review_required: bool = True
+    pipeline_mode: str = "offline_standard"
+    allow_paid_apis: bool = False
+    require_human_review: bool = True
+    export_products: List[str] = field(default_factory=lambda: ["stt", "diarisation", "evaluation_gold"])
+    premium: Dict = field(default_factory=lambda: {
+        "enabled": False,
+        "allow_paid_apis": False,
+        "paid_budget_mode": "smart",
+        "preferred_asr_engines": ["whisper_local", "deepgram", "google_stt_v2"],
+        "preferred_alignment_engines": ["vendor_word_timestamps", "whisperx"],
+        "require_human_review": True,
+        "asr_engines": {
+            "whisper_local": {"enabled": True},
+            "deepgram": {"enabled": False, "api_key_env": "DEEPGRAM_API_KEY", "model": "nova-2"},
+            "google_stt_v2": {
+                "enabled": False,
+                "credentials_env": "GOOGLE_APPLICATION_CREDENTIALS",
+                "recognizer": "_",
+                "language_codes": ["en-IN", "hi-IN", "pa-IN"],
+                "model": "long",
+            },
+            "azure_speech": {
+                "enabled": False,
+                "api_key_env": "AZURE_SPEECH_KEY",
+                "region_env": "AZURE_SPEECH_REGION",
+            },
+        },
+        "alignment": {
+            "whisperx_enabled": False,
+            "vendor_word_timestamps_enabled": True,
+        },
+    })
+    word_accuracy_target: float = 0.98
+    code_switch_accuracy_target: float = 0.98
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -128,4 +167,10 @@ class PipelineConfig:
         # offline_mode may arrive as string "true"/"false" from CLI
         if "offline_mode" in d and isinstance(d["offline_mode"], str):
             d["offline_mode"] = d["offline_mode"].lower() in ("true", "1", "yes")
+        if "allow_paid_apis" in d and isinstance(d["allow_paid_apis"], str):
+            d["allow_paid_apis"] = d["allow_paid_apis"].lower() in ("true", "1", "yes")
+        if "require_human_review" in d and isinstance(d["require_human_review"], str):
+            d["require_human_review"] = d["require_human_review"].lower() in ("true", "1", "yes")
+        if "export_products" in d and isinstance(d["export_products"], str):
+            d["export_products"] = [item.strip() for item in d["export_products"].split(",") if item.strip()]
         return cls.from_dict(d)

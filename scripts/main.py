@@ -16,6 +16,19 @@ def _bool(v: str | bool) -> bool:
     return str(v).lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _load_premium_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    content = Path(path).read_text(encoding="utf-8")
+    if path.endswith(".json"):
+        return json.loads(content)
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("YAML premium config requires PyYAML or use a JSON file instead.") from exc
+    return yaml.safe_load(content) or {}
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Sonexis offline conversational dataset pipeline")
     p.add_argument("--input", required=True, help="conversation folder or audio file")
@@ -30,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--compute_type", "--compute-type", default="int8")
     p.add_argument("--device", default="cpu")
     p.add_argument("--language", default=None)
+    p.add_argument("--metadata_file", "--metadata-file", default=None)
+    p.add_argument("--accent", default=None)
+    p.add_argument("--region", default=None)
+    p.add_argument("--dialect", default=None)
+    p.add_argument("--domain", default=None)
     p.add_argument("--metadata_depth", "--metadata-depth", default="full", choices=["basic", "full"])
     p.add_argument("--enable_monologue_extraction", "--enable-monologue-extraction", default="true")
     p.add_argument("--alignment_min_confidence", "--alignment-min-confidence", type=float, default=0.35)
@@ -37,12 +55,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pair_min_turn_duration_s", "--pair-min-turn-duration-s", type=float, default=0.08)
     p.add_argument("--random_seed", "--random-seed", type=int, default=0)
     p.add_argument("--fail_fast", "--fail-fast", default="false")
+    p.add_argument("--pipeline_mode", "--pipeline-mode", default="offline_standard",
+                   choices=["offline_standard", "premium_accuracy"])
+    p.add_argument("--allow_paid_apis", "--allow-paid-apis", default="false")
+    p.add_argument("--premium_config", "--premium-config", default=None)
+    p.add_argument("--require_human_review", "--require-human-review", default="true")
+    p.add_argument("--export_products", "--export-products", default="stt,diarisation,evaluation_gold")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     input_type = "speaker_pair" if args.input_type == "separate" else args.input_type
+    premium_cfg = _load_premium_config(args.premium_config)
     cfg = PipelineConfig(
         input_type=input_type,
         output_mode=args.output_mode,
@@ -52,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         compute_type=args.compute_type,
         device=args.device,
         language=args.language,
+        metadata_file=args.metadata_file,
+        accent=args.accent,
+        region=args.region,
+        dialect=args.dialect,
+        domain=args.domain,
         metadata_depth=args.metadata_depth,
         enable_monologue_extraction=_bool(args.enable_monologue_extraction),
         alignment_min_confidence=args.alignment_min_confidence,
@@ -60,7 +90,15 @@ def main(argv: list[str] | None = None) -> int:
         random_seed=args.random_seed,
         fail_fast=_bool(args.fail_fast),
         ask_metadata=False,
+        pipeline_mode=args.pipeline_mode,
+        allow_paid_apis=_bool(args.allow_paid_apis),
+        require_human_review=_bool(args.require_human_review),
+        export_products=[item.strip() for item in args.export_products.split(",") if item.strip()],
+        premium=premium_cfg or PipelineConfig().premium,
     )
+    if cfg.pipeline_mode == "premium_accuracy":
+        cfg.premium["enabled"] = True
+        cfg.premium["allow_paid_apis"] = bool(cfg.allow_paid_apis)
     result = process_conversation(args.input, args.output, cfg)
     summary = {
         "output_path": result["output_path"],
