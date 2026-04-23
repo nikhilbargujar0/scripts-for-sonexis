@@ -183,6 +183,7 @@ def build_routing_decision(
         local_first=True,
         difficulty_score=difficulty_score(context),
         should_escalate=should_escalate_to_paid_asr(context),
+        escalated_to_paid=any(str(engine) != "whisper_local" for engine in (engines_used or [])),
         reasons=difficulty_reasons(context),
         attempted_engines=list(attempted_engines or []),
         skipped_engines=list(skipped_engines or []),

@@ -145,6 +145,8 @@ def refine_timestamps(
             word_timestamps_available=True,
             segment_timestamps_available=_segment_timestamps_available(candidate.transcript),
             refinement_applied=False,
+            synthetic_word_timestamps=False,
+            timing_quality="high",
             notes=["trusted_vendor_timestamps_selected"],
         )
 
@@ -158,16 +160,32 @@ def refine_timestamps(
                 word_timestamps_available=_word_timestamps_available(refined),
                 segment_timestamps_available=_segment_timestamps_available(refined),
                 refinement_applied=True,
+                synthetic_word_timestamps=False,
+                timing_quality="high",
                 notes=["whisperx_alignment_applied"],
             )
 
+    had_word_timestamps = _word_timestamps_available(candidate.transcript)
     fallback = _fallback_word_alignment(candidate.transcript)
+    synthetic = not had_word_timestamps and _word_timestamps_available(fallback)
+    timing_quality = "low" if synthetic else "medium"
+    confidence = min(0.35, float(candidate.timestamp_confidence or 0.35)) if synthetic else min(
+        0.55,
+        max(0.4, float(candidate.timestamp_confidence or 0.45)),
+    )
+    notes = ["local_fallback_alignment_used"]
+    if synthetic:
+        notes.append("synthetic_word_timestamps_generated_by_even_word_split")
+    else:
+        notes.append("local_word_timestamps_retained_without_vendor_or_whisperx_refinement")
     return AlignmentResult(
         transcript=fallback,
         timestamp_method="local_alignment_fallback",
-        timestamp_confidence=max(0.45, float(candidate.timestamp_confidence or 0.0)),
+        timestamp_confidence=confidence,
         word_timestamps_available=_word_timestamps_available(fallback),
         segment_timestamps_available=_segment_timestamps_available(fallback),
-        refinement_applied=_word_timestamps_available(fallback) and not _word_timestamps_available(candidate.transcript),
-        notes=["local_fallback_alignment_used"],
+        refinement_applied=synthetic,
+        synthetic_word_timestamps=synthetic,
+        timing_quality=timing_quality,
+        notes=notes,
     )

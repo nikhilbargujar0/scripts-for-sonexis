@@ -61,6 +61,7 @@ class PremiumConsensusTests(unittest.TestCase):
 
         self.assertEqual(winner.engine, "deepgram")
         self.assertEqual(result.transcript_strategy, "best_single_engine")
+        self.assertIn("deepgram", result.candidate_rationales)
 
     def test_merged_consensus_path_prefers_better_timestamps(self) -> None:
         winner, result = choose_consensus(
@@ -73,6 +74,31 @@ class PremiumConsensusTests(unittest.TestCase):
         self.assertEqual(winner.engine, "merged_consensus")
         self.assertEqual(result.transcript_strategy, "merged_consensus")
         self.assertEqual(winner.timing_source, "vendor_word_timestamps")
+        self.assertIn("merge_allowed_by_token_timing_switch_agreement", result.rationale[0])
+
+    def test_code_switch_disagreement_is_preserved_in_rationale(self) -> None:
+        first = _candidate("deepgram", "hello namaste", confidence=0.86, timestamp_confidence=0.9)
+        first.code_switch_signals = {
+            "detected": True,
+            "dominant_languages": ["English", "Hindi"],
+            "switch_count": 3,
+            "switch_patterns": ["en->hi", "hi->en"],
+            "switching_score": 0.7,
+        }
+        second = _candidate("google_stt_v2", "hello namaste", confidence=0.84, timestamp_confidence=0.91)
+        second.code_switch_signals = {
+            "detected": False,
+            "dominant_languages": ["English"],
+            "switch_count": 0,
+            "switch_patterns": [],
+            "switching_score": 0.0,
+        }
+
+        winner, result = choose_consensus([first, second])
+
+        self.assertEqual(winner.engine, "deepgram")
+        self.assertIn("strong_code_switch_disagreement", result.disagreement_flags)
+        self.assertTrue(any("code_switch_preservation" in item for item in result.candidate_rationales["deepgram"]))
 
 
 if __name__ == "__main__":  # pragma: no cover

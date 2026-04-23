@@ -166,12 +166,22 @@
     },
     "human_review": {
       "type": "object",
-      "required": ["required", "status", "review_stage", "reviewer_id", "notes"],
+      "required": ["required", "status", "review_stage", "priority", "reviewer_id", "notes"],
       "additionalProperties": true,
       "properties": {
         "required": {"type": "boolean"},
         "status": {"type": "string"},
         "review_stage": {"type": "string"},
+        "priority": {
+          "type": "object",
+          "required": ["level", "score", "reasons"],
+          "additionalProperties": true,
+          "properties": {
+            "level": {"type": "string"},
+            "score": {"type": "number", "minimum": 0},
+            "reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        },
         "reviewer_id": {"type": ["string", "null"]},
         "notes": {"type": ["string", "null"]}
       }
@@ -237,26 +247,57 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["engine", "provider", "paid_api", "transcript", "timing_source"],
+        "required": ["engine", "provider", "paid_api", "transcript", "timing_source", "normalisation_notes"],
         "additionalProperties": true,
         "properties": {
           "engine": {"type": "string"},
           "provider": {"type": "string"},
           "paid_api": {"type": "boolean"},
           "transcript": {"type": "object", "additionalProperties": true},
-          "timing_source": {"type": "string"}
+          "timing_source": {"type": "string"},
+          "normalisation_notes": {"type": "array", "items": {"type": "string"}}
         }
       }
     },
     "routing_decision": {
       "type": "object",
-      "additionalProperties": true
+      "required": [
+        "difficulty_score",
+        "escalated_to_paid",
+        "reasons",
+        "engines_attempted",
+        "engines_skipped"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "difficulty_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "escalated_to_paid": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "engines_attempted": {"type": "array", "items": {"type": "string"}},
+        "engines_skipped": {"type": "array", "items": {"type": "string"}}
+      }
     },
     "timestamp_method": {"type": ["string", "null"]},
     "timestamp_confidence": {"type": ["number", "null"]},
     "timestamp_refinement": {
       "type": "object",
-      "additionalProperties": true
+      "required": [
+        "word_timestamps_available",
+        "segment_timestamps_available",
+        "refinement_applied",
+        "synthetic_word_timestamps",
+        "timing_quality",
+        "notes"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "word_timestamps_available": {"type": "boolean"},
+        "segment_timestamps_available": {"type": "boolean"},
+        "refinement_applied": {"type": "boolean"},
+        "synthetic_word_timestamps": {"type": "boolean"},
+        "timing_quality": {"type": "string"},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
     },
     "tts_suitability": {
       "type": "object",

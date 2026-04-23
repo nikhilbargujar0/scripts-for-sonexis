@@ -311,6 +311,7 @@ def process_speaker_pair(
         review_status=str(human_review.get("status") or "pending"),
         overlap_duration_s=expected_overlap_s,
         speaker_count=len(speaker_meta),
+        alignment=alignment_result,
     )
     if routing_decision is not None and consensus_result is not None and alignment_result is not None:
         premium_processing = build_premium_processing(
@@ -391,10 +392,18 @@ def process_speaker_pair(
     record["tts_suitability"] = tts_suitability
     record["dataset_products"] = _dataset_products(cfg)
     record["premium_processing"] = premium_processing
-    if transcript_candidates:
-        record["transcript_candidates"] = [candidate.to_dict() for candidate in transcript_candidates]
+    if transcript_candidates and bool(getattr(cfg, "store_transcript_candidates", True)):
+        record["transcript_candidates"] = [
+            candidate.to_dict(
+                include_segments=bool(getattr(cfg, "store_candidate_segments", True)),
+                include_words=bool(getattr(cfg, "store_candidate_words", False)),
+            )
+            for candidate in transcript_candidates
+        ]
     if routing_decision is not None:
         record["routing_decision"] = routing_decision.to_dict()
+    if consensus_result is not None:
+        record["consensus"] = consensus_result.to_dict()
     if alignment_result is not None:
         record["timestamp_method"] = alignment_result.timestamp_method
         record["timestamp_confidence"] = round(float(alignment_result.timestamp_confidence), 4)

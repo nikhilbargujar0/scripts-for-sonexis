@@ -196,6 +196,11 @@ def _default_human_review(required: bool = True) -> Dict:
         "required": bool(required),
         "status": "pending",
         "review_stage": "transcript_review",
+        "priority": {
+            "level": "normal",
+            "score": 0.0,
+            "reasons": [],
+        },
         "reviewer_id": None,
         "notes": None,
     }
@@ -225,6 +230,36 @@ def _default_premium_processing() -> Dict:
         "consensus_applied": False,
         "timestamp_refinement_applied": False,
         "human_review_required": True,
+    }
+
+
+def _default_routing_decision() -> Dict:
+    return {
+        "pipeline_mode": "offline_standard",
+        "paid_api_allowed": False,
+        "local_first": True,
+        "difficulty_score": 0.0,
+        "should_escalate": False,
+        "escalated_to_paid": False,
+        "reasons": [],
+        "attempted_engines": ["whisper_local"],
+        "skipped_engines": [],
+        "engines_attempted": ["whisper_local"],
+        "engines_skipped": [],
+        "engines_used": ["whisper_local"],
+    }
+
+
+def _default_timestamp_refinement() -> Dict:
+    return {
+        "timestamp_method": None,
+        "timestamp_confidence": None,
+        "word_timestamps_available": False,
+        "segment_timestamps_available": False,
+        "refinement_applied": False,
+        "synthetic_word_timestamps": False,
+        "timing_quality": "low",
+        "notes": [],
     }
 
 
@@ -347,11 +382,11 @@ def build_record(
         "input_alignment": input_alignment or {},
         "mono_mix": mono_mix or {},
         "transcript_candidates": list(transcript_candidates or []),
-        "routing_decision": routing_decision or {},
+        "routing_decision": routing_decision or _default_routing_decision(),
         "timestamp_method": timestamp_method,
         "timestamp_confidence": round(float(timestamp_confidence), 4) if timestamp_confidence is not None else None,
-        "timestamp_refinement": timestamp_refinement or {},
-        "tts_suitability": tts_suitability or {"eligible": False, "reasons": ["review_not_final"], "confidence": 0.3},
+        "timestamp_refinement": timestamp_refinement or _default_timestamp_refinement(),
+        "tts_suitability": tts_suitability or {"eligible": False, "reasons": ["review_not_final"], "confidence": 0.2},
         "dataset_products": list(dataset_products or []),
         "premium_processing": premium_processing or _default_premium_processing(),
     }

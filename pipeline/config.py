@@ -115,6 +115,9 @@ class PipelineConfig:
     allow_paid_apis: bool = False
     require_human_review: bool = True
     export_products: List[str] = field(default_factory=lambda: ["stt", "diarisation", "evaluation_gold"])
+    store_transcript_candidates: bool = True
+    store_candidate_segments: bool = True
+    store_candidate_words: bool = False
     premium: Dict = field(default_factory=lambda: {
         "enabled": False,
         "allow_paid_apis": False,
@@ -171,6 +174,12 @@ class PipelineConfig:
             d["allow_paid_apis"] = d["allow_paid_apis"].lower() in ("true", "1", "yes")
         if "require_human_review" in d and isinstance(d["require_human_review"], str):
             d["require_human_review"] = d["require_human_review"].lower() in ("true", "1", "yes")
+        if "store_transcript_candidates" in d and isinstance(d["store_transcript_candidates"], str):
+            d["store_transcript_candidates"] = d["store_transcript_candidates"].lower() in ("true", "1", "yes")
+        if "store_candidate_segments" in d and isinstance(d["store_candidate_segments"], str):
+            d["store_candidate_segments"] = d["store_candidate_segments"].lower() in ("true", "1", "yes")
+        if "store_candidate_words" in d and isinstance(d["store_candidate_words"], str):
+            d["store_candidate_words"] = d["store_candidate_words"].lower() in ("true", "1", "yes")
         if "export_products" in d and isinstance(d["export_products"], str):
             d["export_products"] = [item.strip() for item in d["export_products"].split(",") if item.strip()]
         return cls.from_dict(d)

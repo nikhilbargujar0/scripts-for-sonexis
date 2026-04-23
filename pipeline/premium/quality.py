@@ -51,16 +51,19 @@ def build_code_switch_metadata(
 ) -> Dict[str, Any]:
     language_report = language_report or {}
     code_switch = dict((candidate.code_switch_signals if candidate else {}) or {})
-    if language_report.get("language_segments"):
-        report = build_code_switch_report(language_report.get("language_segments") or [])
-        code_switch.setdefault("switch_count", int(report.get("switch_count") or 0))
-        code_switch.setdefault("switch_patterns", list(report.get("patterns") or []))
-        if not code_switch.get("dominant_languages"):
-            code_switch["dominant_languages"] = [
-                segment.get("lang")
-                for segment in report.get("segments", [])
-                if segment.get("lang")
-            ]
+    report = build_code_switch_report(
+        language_report.get("language_segments")
+        or language_report.get("segments")
+        or []
+    )
+    if report.get("segments"):
+        code_switch["switch_count"] = int(report.get("switch_count") or 0)
+        code_switch["switch_patterns"] = list(report.get("patterns") or [])
+        code_switch["dominant_languages"] = [
+            segment.get("lang")
+            for segment in report.get("segments", [])
+            if segment.get("lang")
+        ]
     dominant = []
     for language in code_switch.get("dominant_languages") or []:
         if language and language not in dominant:
@@ -99,6 +102,7 @@ def build_tts_suitability(
     review_status: str,
     overlap_duration_s: float,
     speaker_count: int,
+    alignment: Optional[AlignmentResult] = None,
 ) -> Dict[str, Any]:
     audio = ((record_or_meta or {}).get("metadata") or {}).get("audio") if "metadata" in (record_or_meta or {}) else (record_or_meta or {})
     noise_level = extract_noise_level(audio)
@@ -111,8 +115,8 @@ def build_tts_suitability(
     if float(overlap_duration_s or 0.0) > 0.0:
         reasons.append("overlap_detected")
         eligible = False
-    if noise_level not in {"low", "moderate"}:
-        reasons.append("high_noise")
+    if noise_level != "low":
+        reasons.append("noise_not_low")
         eligible = False
     if recording_condition == "outdoor":
         reasons.append("outdoor_condition")
@@ -120,8 +124,18 @@ def build_tts_suitability(
     if review_status not in {"approved", "corrected"}:
         reasons.append("review_not_final")
         eligible = False
+    if alignment is None:
+        reasons.append("timing_not_verified")
+        eligible = False
+    else:
+        if bool(alignment.synthetic_word_timestamps):
+            reasons.append("synthetic_timestamps")
+            eligible = False
+        if str(alignment.timing_quality).lower() not in {"high"}:
+            reasons.append("timing_not_stable")
+            eligible = False
     return {
         "eligible": eligible,
         "reasons": reasons,
-        "confidence": 0.9 if eligible else 0.3,
+        "confidence": 0.92 if eligible else 0.2,
     }

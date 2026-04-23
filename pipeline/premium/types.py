@@ -13,18 +13,33 @@ def _round_or_none(value: Optional[float], digits: int = 4) -> Optional[float]:
     return round(float(value), digits)
 
 
-def transcript_to_payload(transcript: Transcript) -> Dict[str, Any]:
+def transcript_to_payload(
+    transcript: Transcript,
+    *,
+    include_segments: bool = True,
+    include_words: bool = True,
+) -> Dict[str, Any]:
+    segments: List[Dict[str, Any]] = []
+    words: List[Dict[str, Any]] = []
+    if include_segments:
+        for segment in transcript.segments:
+            payload = segment.to_dict()
+            if not include_words:
+                payload["words"] = []
+            segments.append(payload)
+    if include_words:
+        words = [
+            word.to_dict()
+            for segment in transcript.segments
+            for word in (segment.words or [])
+        ]
     return {
         "raw": transcript.text,
         "language": transcript.language,
         "language_probability": round(float(transcript.language_probability), 4),
         "duration_s": round(float(transcript.duration), 3),
-        "segments": [segment.to_dict() for segment in transcript.segments],
-        "words": [
-            word.to_dict()
-            for segment in transcript.segments
-            for word in (segment.words or [])
-        ],
+        "segments": segments,
+        "words": words,
     }
 
 
@@ -43,13 +58,23 @@ class TranscriptCandidate:
     timestamp_confidence: Optional[float] = None
     warnings: List[str] = field(default_factory=list)
     adapter_metadata: Dict[str, Any] = field(default_factory=dict)
+    normalisation_notes: List[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(
+        self,
+        *,
+        include_segments: bool = True,
+        include_words: bool = True,
+    ) -> Dict[str, Any]:
         return {
             "engine": self.engine,
             "provider": self.provider or self.engine,
             "paid_api": bool(self.paid_api),
-            "transcript": transcript_to_payload(self.transcript),
+            "transcript": transcript_to_payload(
+                self.transcript,
+                include_segments=include_segments,
+                include_words=include_words,
+            ),
             "confidence": _round_or_none(self.confidence),
             "avg_word_confidence": _round_or_none(self.avg_word_confidence),
             "language_hint": self.language_hint,
@@ -59,6 +84,7 @@ class TranscriptCandidate:
             "timestamp_confidence": _round_or_none(self.timestamp_confidence),
             "warnings": list(self.warnings),
             "adapter_metadata": dict(self.adapter_metadata),
+            "normalisation_notes": list(self.normalisation_notes),
         }
 
 
@@ -69,6 +95,7 @@ class RoutingDecision:
     local_first: bool = True
     difficulty_score: float = 0.0
     should_escalate: bool = False
+    escalated_to_paid: bool = False
     reasons: List[str] = field(default_factory=list)
     attempted_engines: List[str] = field(default_factory=list)
     skipped_engines: List[str] = field(default_factory=list)
@@ -81,9 +108,12 @@ class RoutingDecision:
             "local_first": bool(self.local_first),
             "difficulty_score": round(float(self.difficulty_score), 4),
             "should_escalate": bool(self.should_escalate),
+            "escalated_to_paid": bool(self.escalated_to_paid),
             "reasons": list(self.reasons),
             "attempted_engines": list(self.attempted_engines),
             "skipped_engines": list(self.skipped_engines),
+            "engines_attempted": list(self.attempted_engines),
+            "engines_skipped": list(self.skipped_engines),
             "engines_used": list(self.engines_used),
         }
 
@@ -97,6 +127,8 @@ class ConsensusResult:
     transcript_strategy: str = "best_single_engine"
     review_recommended: bool = False
     rationale: List[str] = field(default_factory=list)
+    candidate_rationales: Dict[str, List[str]] = field(default_factory=dict)
+    disagreement_flags: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -106,6 +138,8 @@ class ConsensusResult:
             "transcript_strategy": self.transcript_strategy,
             "review_recommended": bool(self.review_recommended),
             "rationale": list(self.rationale),
+            "candidate_rationales": {key: list(value) for key, value in self.candidate_rationales.items()},
+            "disagreement_flags": list(self.disagreement_flags),
         }
 
 
@@ -117,6 +151,8 @@ class AlignmentResult:
     word_timestamps_available: bool
     segment_timestamps_available: bool
     refinement_applied: bool = False
+    synthetic_word_timestamps: bool = False
+    timing_quality: str = "medium"
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -126,6 +162,8 @@ class AlignmentResult:
             "word_timestamps_available": bool(self.word_timestamps_available),
             "segment_timestamps_available": bool(self.segment_timestamps_available),
             "refinement_applied": bool(self.refinement_applied),
+            "synthetic_word_timestamps": bool(self.synthetic_word_timestamps),
+            "timing_quality": self.timing_quality,
             "notes": list(self.notes),
         }
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from ...language_detection import (
@@ -58,6 +59,34 @@ def _romanized_indic_present(text: str) -> bool:
     return bool(tokens.intersection(markers))
 
 
+_ANY_PUNCTUATION = re.compile(r"[^\w\s]", flags=re.UNICODE)
+_ANY_NUMERAL = re.compile(r"[0-9\u0966-\u096F\u0A66-\u0A6F]")
+
+
+def infer_normalisation_notes(
+    transcript: Transcript,
+    *,
+    extra_notes: Optional[List[str]] = None,
+) -> List[str]:
+    text = str(transcript.text or "")
+    notes: List[str] = list(extra_notes or [])
+    if _ANY_PUNCTUATION.search(text):
+        notes.append("punctuation_normalisation_applied_for_comparison")
+    if _ANY_NUMERAL.search(text):
+        notes.append("numeral_normalisation_applied_for_comparison")
+    if _romanized_indic_present(text):
+        notes.append("romanized_indic_tokens_present")
+    if any("-" in (word.text or "") for segment in transcript.segments for word in (segment.words or [])):
+        notes.append("provider_token_split_merge_variation_detected")
+    seen = set()
+    ordered: List[str] = []
+    for note in notes:
+        if note and note not in seen:
+            seen.add(note)
+            ordered.append(note)
+    return ordered
+
+
 def derive_code_switch_signals(
     transcript: Transcript,
     *,
@@ -109,6 +138,7 @@ def build_candidate(
     confidence: Optional[float] = None,
     avg_word_probability: Optional[float] = None,
     timestamp_score: Optional[float] = None,
+    normalisation_notes: Optional[List[str]] = None,
 ) -> TranscriptCandidate:
     code_switch_signals = derive_code_switch_signals(
         transcript,
@@ -137,4 +167,8 @@ def build_candidate(
         ),
         warnings=list(warnings or []),
         adapter_metadata=dict(adapter_metadata or {}),
+        normalisation_notes=infer_normalisation_notes(
+            transcript,
+            extra_notes=normalisation_notes,
+        ),
     )

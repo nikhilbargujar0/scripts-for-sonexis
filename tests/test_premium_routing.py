@@ -101,6 +101,8 @@ class PremiumRoutingTests(unittest.TestCase):
         self.assertEqual(len(result["candidates"]), 1)
         self.assertFalse(result["routing_decision"].should_escalate)
         self.assertEqual(result["routing_decision"].engines_used, ["whisper_local"])
+        self.assertFalse(result["routing_decision"].to_dict()["escalated_to_paid"])
+        self.assertEqual(result["routing_decision"].to_dict()["engines_attempted"], ["whisper_local"])
 
     def test_router_escalates_when_local_quality_is_low(self) -> None:
         cfg = PipelineConfig(
@@ -127,6 +129,10 @@ class PremiumRoutingTests(unittest.TestCase):
         self.assertEqual([candidate.engine for candidate in result["candidates"]], ["whisper_local", "deepgram"])
         self.assertTrue(result["routing_decision"].should_escalate)
         self.assertIn("deepgram", result["routing_decision"].engines_used)
+        persisted = result["routing_decision"].to_dict()
+        self.assertTrue(persisted["escalated_to_paid"])
+        self.assertEqual(persisted["engines_attempted"], ["whisper_local", "deepgram"])
+        self.assertEqual(persisted["engines_skipped"], [])
 
     def test_router_fails_clearly_when_credentials_are_missing(self) -> None:
         cfg = PipelineConfig(

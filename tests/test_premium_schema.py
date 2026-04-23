@@ -8,6 +8,7 @@ from pipeline.diarisation import SpeakerTurn
 from pipeline.language_detection import LanguageReport
 from pipeline.metadata_extraction import extract_audio_metadata, extract_conversation_metadata, extract_speaker_metadata
 from pipeline.output_formatter import build_record
+from pipeline.premium.types import TranscriptCandidate
 from pipeline.steps.validation import validate_record_against_schema
 from pipeline.transcription import Transcript, TranscriptSegment, Word
 
@@ -86,12 +87,28 @@ class PremiumSchemaTests(unittest.TestCase):
                     "paid_api": False,
                     "transcript": {"raw": "hello namaste"},
                     "timing_source": "local_word_timestamps",
+                    "normalisation_notes": [],
                 }
             ],
-            routing_decision={"pipeline_mode": "premium_accuracy"},
+            routing_decision={
+                "pipeline_mode": "premium_accuracy",
+                "difficulty_score": 0.78,
+                "escalated_to_paid": True,
+                "reasons": ["outdoor_audio"],
+                "engines_attempted": ["whisper_local", "deepgram"],
+                "engines_skipped": [],
+            },
             timestamp_method="vendor_word_timestamps",
             timestamp_confidence=0.93,
-            timestamp_refinement={"timestamp_method": "vendor_word_timestamps"},
+            timestamp_refinement={
+                "timestamp_method": "vendor_word_timestamps",
+                "word_timestamps_available": True,
+                "segment_timestamps_available": True,
+                "refinement_applied": False,
+                "synthetic_word_timestamps": False,
+                "timing_quality": "high",
+                "notes": [],
+            },
             tts_suitability={"eligible": False, "reasons": ["review_not_final"], "confidence": 0.3},
             dataset_products=["stt", "evaluation_gold"],
             premium_processing={
@@ -104,6 +121,24 @@ class PremiumSchemaTests(unittest.TestCase):
             },
         )
         validate_record_against_schema(record)
+
+    def test_candidate_persistence_can_drop_words_but_keep_segments(self) -> None:
+        transcript = self._transcript()
+        candidate = TranscriptCandidate(
+            engine="deepgram",
+            provider="deepgram",
+            paid_api=True,
+            transcript=transcript,
+            timing_source="vendor_word_timestamps",
+            normalisation_notes=["punctuation_normalisation_applied_for_comparison"],
+        )
+
+        payload = candidate.to_dict(include_segments=True, include_words=False)
+
+        self.assertEqual(payload["transcript"]["words"], [])
+        self.assertEqual(len(payload["transcript"]["segments"]), 1)
+        self.assertEqual(payload["transcript"]["segments"][0]["words"], [])
+        self.assertEqual(payload["normalisation_notes"], ["punctuation_normalisation_applied_for_comparison"])
 
 
 if __name__ == "__main__":  # pragma: no cover
