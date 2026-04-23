@@ -20,6 +20,8 @@
     "generated_at": {"type": "string"},
     "input_mode": {"type": "string"},
     "session_name": {"type": "string"},
+    "input_alignment": {"type": "object", "additionalProperties": true},
+    "mono_mix": {"type": "object", "additionalProperties": true},
     "metadata": {
       "type": "object",
       "required": ["audio", "language", "speakers", "conversation", "interaction"],

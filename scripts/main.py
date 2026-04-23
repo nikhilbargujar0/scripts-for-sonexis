@@ -32,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--language", default=None)
     p.add_argument("--metadata_depth", "--metadata-depth", default="full", choices=["basic", "full"])
     p.add_argument("--enable_monologue_extraction", "--enable-monologue-extraction", default="true")
+    p.add_argument("--alignment_min_confidence", "--alignment-min-confidence", type=float, default=0.35)
+    p.add_argument("--pair_merge_gap_s", "--pair-merge-gap-s", type=float, default=0.15)
+    p.add_argument("--pair_min_turn_duration_s", "--pair-min-turn-duration-s", type=float, default=0.08)
     p.add_argument("--random_seed", "--random-seed", type=int, default=0)
     p.add_argument("--fail_fast", "--fail-fast", default="false")
     return p
@@ -51,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
         language=args.language,
         metadata_depth=args.metadata_depth,
         enable_monologue_extraction=_bool(args.enable_monologue_extraction),
+        alignment_min_confidence=args.alignment_min_confidence,
+        pair_merge_gap_s=args.pair_merge_gap_s,
+        pair_min_turn_duration_s=args.pair_min_turn_duration_s,
         random_seed=args.random_seed,
         fail_fast=_bool(args.fail_fast),
         ask_metadata=False,

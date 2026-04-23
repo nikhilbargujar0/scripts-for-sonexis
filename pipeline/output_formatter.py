@@ -181,6 +181,8 @@ def build_record(
     speaker_map: Optional[Dict[str, str]] = None,
     source_files: Optional[List[str]] = None,
     generated_at: Optional[str] = None,
+    input_alignment: Optional[Dict] = None,
+    mono_mix: Optional[Dict] = None,
     # perf
     skip_sha1: bool = False,
 ) -> Dict:
@@ -238,6 +240,8 @@ def build_record(
         "validation": validation or {"passed": True, "issue_count": 0, "issues": [], "checks": {}},
         "processing": processing or {},
         "artifacts": {},
+        "input_alignment": input_alignment or {},
+        "mono_mix": mono_mix or {},
     }
 
     # speaker_pair mode: add source-file provenance

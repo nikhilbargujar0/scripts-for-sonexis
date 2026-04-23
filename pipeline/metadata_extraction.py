@@ -25,6 +25,7 @@ import numpy as np
 
 from .diarisation import SpeakerTurn
 from .transcription import Transcript, TranscriptSegment
+from .utils.metadata_fields import inferred_field
 
 log = logging.getLogger(__name__)
 
@@ -199,18 +200,19 @@ def extract_audio_metadata(
         "rt60_s_estimate": round(rt60, 3),
         "spectral_centroid_khz": round(centroid, 3),
         "environment": {
-            "value": env_value,
-            "confidence": round(env_conf, 3),
+            **inferred_field(env_value, env_conf),
             "method": "snr_rt60_heuristic",
         },
         "noise_level": {
-            "value": noise_value,
-            "confidence": round(noise_conf, 3),
+            **inferred_field(noise_value, noise_conf),
             "method": "snr_heuristic",
         },
+        "device_type": {
+            **inferred_field(device_value, device_conf),
+            "method": "sample_rate_spectral_centroid_heuristic",
+        },
         "device_estimate": {
-            "value": device_value,
-            "confidence": round(device_conf, 3),
+            **inferred_field(device_value, device_conf),
             "method": "sample_rate_spectral_centroid_heuristic",
         },
     }
@@ -375,18 +377,15 @@ def extract_speaker_metadata(
             "pause_frequency_per_min": round(pause_frequency, 3),
             "filler_ratio": round(filler_ratio, 3),
             "speaking_style": {
-                "value": style_value,
-                "confidence": round(style_conf, 3),
+                **inferred_field(style_value, style_conf),
                 "method": "wpm_pause_filler_heuristic",
             },
             "formality": {
-                "value": formality_value,
-                "confidence": round(formality_conf, 3),
+                **inferred_field(formality_value, formality_conf),
                 "method": "filler_pause_heuristic",
             },
             "accent": {
-                "value": accent_value,
-                "confidence": round(accent_conf, 3),
+                **inferred_field(accent_value, accent_conf),
                 "method": "language_script_proxy",
             },
             "turn_count": len(per_speaker_turns.get(speaker, [])),
@@ -530,6 +529,8 @@ def extract_conversation_metadata(
         "speaker_count": len({t.speaker for t in turns}),
         "avg_turn_length_s": round(avg_turn, 3),
         "total_speech_time_s": round(sum(turn_durations), 3),
+        "topic": inferred_field(keywords[0] if keywords else "unknown", 0.58 if keywords else 0.2),
+        "sub_topic": inferred_field(keywords[1] if len(keywords) > 1 else "unknown", 0.46 if len(keywords) > 1 else 0.2),
         "topic_keywords": keywords,
         "intents": intents,
         "quality": quality_summary,

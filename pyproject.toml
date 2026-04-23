@@ -35,7 +35,7 @@ pyannote = ["pyannote.audio>=3.1.1", "torch>=2.0.0"]
 sonexis-pipeline = "scripts.main:main"
 
 [tool.setuptools]
-packages = ["pipeline", "pipeline.steps", "scripts"]
+packages = ["pipeline", "pipeline.steps", "pipeline.processors", "pipeline.utils", "scripts"]
 
 [tool.setuptools.package-data]
 pipeline = ["*.md", "*.txt"]

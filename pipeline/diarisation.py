@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -250,6 +250,8 @@ def diarise_from_speaker_vad(
     speaker_vad: "Dict[str, List[Segment]]",
     label_prefix: str = "SPEAKER_",
     merge_gap_s: float = 0.4,
+    min_turn_duration_s: float = 0.05,
+    preserve_overlaps: bool = True,
 ) -> "Tuple[List[SpeakerTurn], Dict[str, str]]":
     """Build ground-truth speaker turns from per-speaker VAD segments.
 
@@ -281,7 +283,34 @@ def diarise_from_speaker_vad(
                 confidence=1.0,   # ground truth — no clustering uncertainty
             ))
 
+    if preserve_overlaps:
+        grouped: Dict[str, List[SpeakerTurn]] = {}
+        for turn in turns:
+            grouped.setdefault(turn.speaker, []).append(turn)
+        merged: List[SpeakerTurn] = []
+        for speaker, spk_turns in grouped.items():
+            ordered = sorted(spk_turns, key=lambda t: (t.start, t.end))
+            current = ordered[0]
+            for turn in ordered[1:]:
+                if (turn.start - current.end) <= merge_gap_s:
+                    avg_conf = (current.confidence + turn.confidence) / 2.0
+                    current = SpeakerTurn(
+                        current.start,
+                        max(current.end, turn.end),
+                        speaker,
+                        avg_conf,
+                    )
+                else:
+                    if current.duration() >= min_turn_duration_s:
+                        merged.append(current)
+                    current = turn
+            if current.duration() >= min_turn_duration_s:
+                merged.append(current)
+        merged.sort(key=lambda t: (t.start, t.end, t.speaker))
+        return merged, speaker_map
+
     merged = _merge_turns(sorted(turns, key=lambda t: t.start), merge_gap_s)
+    merged = [t for t in merged if t.duration() >= min_turn_duration_s]
     return merged, speaker_map
 
 

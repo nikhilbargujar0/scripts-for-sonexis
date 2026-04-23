@@ -65,9 +65,11 @@ def _flatten_for_parquet(record: Dict) -> Dict:
         "snr_db_estimate": audio.get("snr_db_estimate"),
         "rt60_s_estimate": audio.get("rt60_s_estimate"),
         "spectral_centroid_khz": audio.get("spectral_centroid_khz"),
-        # environment and device_estimate are now {"value":..., "confidence":...}
+        # confidence-wrapped inferred fields
         "environment": _nested_value(audio, "environment"),
         "environment_confidence": _nested_conf(audio, "environment"),
+        "device_type": _nested_value(audio, "device_type"),
+        "device_type_confidence": _nested_conf(audio, "device_type"),
         "device_estimate": _nested_value(audio, "device_estimate"),
         "device_estimate_confidence": _nested_conf(audio, "device_estimate"),
         "noise_level": _nested_value(audio, "noise_level"),
@@ -123,6 +125,10 @@ def _flatten_for_parquet(record: Dict) -> Dict:
         "validation_issues_json": json.dumps(
             validation.get("issues", []), ensure_ascii=False
         ),
+        "input_alignment_json": json.dumps(
+            record.get("input_alignment", {}), ensure_ascii=False
+        ),
+        "mono_mix_json": json.dumps(record.get("mono_mix", {}), ensure_ascii=False),
         "source_files_json": json.dumps(
             record.get("source_files", []), ensure_ascii=False
         ),

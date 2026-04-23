@@ -73,6 +73,9 @@ class PipelineConfig:
 
     # ── interaction metadata ──────────────────────────────────────────
     interruption_threshold_s: float = 0.5  # overlaps shorter than this = interruption
+    alignment_min_confidence: float = 0.35
+    pair_merge_gap_s: float = 0.15
+    pair_min_turn_duration_s: float = 0.08
 
     # ── performance / speed ───────────────────────────────────────────
     # num_workers: parallel session workers (>1 → ProcessPoolExecutor)

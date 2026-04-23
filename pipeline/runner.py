@@ -17,8 +17,9 @@ from .api import _load_models_cached, _model_cache_key, _normalise_config, _prev
 from .batch_writer import BatchWriter
 from .config import PipelineConfig
 from .dataset_writer import DatasetWriter
-from .main import _process_single, _process_speaker_pair
 from .offline import default_model_dir
+from .processors.mono_processor import process_single
+from .processors.pair_processor import process_speaker_pair
 from .steps.audio_processing import (
     detect_and_group_pairs,
     detect_stereo_files,
@@ -141,18 +142,18 @@ def process_conversation(
                     pair = load_stereo_as_pair(item, session_name=session_name)
                     if pair is None:
                         raise ProcessingError(f"cannot load stereo file: {item}")
-                    record = _process_speaker_pair(pair, **shared)
+                    record = process_speaker_pair(pair, **shared)
                 elif input_type == "speaker_pair":
                     session_name, p1, l1, p2, l2 = item
                     pair = load_speaker_pair(p1, l1, p2, l2, session_name=session_name)
                     if pair is None:
                         raise ProcessingError(f"cannot load speaker pair: {session_name}")
-                    record = _process_speaker_pair(pair, **shared)
+                    record = process_speaker_pair(pair, **shared)
                 else:
                     clip = load_audio(item)
                     if clip is None:
                         raise ProcessingError(f"cannot load audio file: {item}")
-                    record = _process_single(clip, **shared)
+                    record = process_single(clip, **shared)
 
                 validate_record_against_schema(record)
                 if cfg.fail_fast and not record.get("validation", {}).get("passed", True):
