@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(unzip -l \"/Users/nikhil/Downloads/DLR/Sonexis/sample/Sample Conversational/Hindi/Hindi/1.zip\")",
-      "Bash(python -c ' *)",
-      "Bash(python3 -c ' *)"
-    ]
-  }
-}
