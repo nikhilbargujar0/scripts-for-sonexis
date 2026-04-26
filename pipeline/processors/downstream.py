@@ -9,7 +9,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from ..audio_loader import LoadedAudio
+from ..code_switch import enrich_code_switch_segments
 from ..config import PipelineConfig
+from ..confidence import annotate_segments_with_confidence
 from ..interaction_metadata import OverlapSegment
 from ..language_detection import FastTextLID, detect_language, detect_language_per_speaker
 from ..metadata_extraction import (
@@ -19,8 +21,11 @@ from ..metadata_extraction import (
 )
 from ..monologue_extractor import MonologueConfig, extract_monologue, extract_monologues_per_speaker
 from ..offline import whisper_local_path
+from ..overlap import annotate_segments_with_overlaps, detect_overlaps
+from ..punctuation import apply_punctuation_metadata
 from ..roman_indic_classifier import RomanIndicClassifier
 from ..steps.interaction import compute_interaction
+from ..snr import annotate_segments_with_snr
 from ..transcription import ASRConfig, FILLERS, Transcript, Transcriber
 from ..diarisation import SpeakerTurn
 from ..utils.metadata_fields import inferred_field, provided_field
@@ -36,6 +41,11 @@ SPEAKER_METADATA_FIELDS = (
 )
 CONVERSATION_METADATA_FIELDS = ("domain",)
 USER_METADATA_FIELDS = SPEAKER_METADATA_FIELDS + CONVERSATION_METADATA_FIELDS
+
+
+def compute_total_speech_duration(speech_segments) -> float:
+    """Sum VAD speech segment durations in seconds."""
+    return float(sum(float(end) - float(start) for start, end in speech_segments))
 
 
 def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
@@ -349,6 +359,11 @@ def run_downstream(
         fasttext_lid=ft_lid,
         roman_indic_classifier=classifier,
     )
+    apply_punctuation_metadata(
+        transcript.segments,
+        enabled=bool(getattr(pipeline_cfg, "punctuation_enabled", True)),
+    )
+    enrich_code_switch_segments(transcript.segments)
 
     interaction_meta, overlap_ratios, overlaps = compute_interaction(
         turns, interruption_threshold_s=pipeline_cfg.interruption_threshold_s
@@ -360,6 +375,24 @@ def run_downstream(
         speech_segments,
         source_info=_audio_source_info(source_audios, sample_rate),
     )
+    # Build VAD mask for SNR-04 (speech-only frame estimation).
+    vad_mask: Optional[np.ndarray] = None
+    if speech_segments:
+        n_samples = len(wav)
+        _mask = np.zeros(n_samples, dtype=bool)
+        for seg_start, seg_end in speech_segments:
+            s = max(0, int(float(seg_start) * sample_rate))
+            e = min(n_samples, int(float(seg_end) * sample_rate))
+            _mask[s:e] = True
+        vad_mask = _mask
+
+    annotate_segments_with_snr(transcript.segments, wav, sample_rate, vad_mask=vad_mask)
+
+    # OVER-01..04: detect overlapping speech regions and annotate segments.
+    overlap_regions = detect_overlaps(turns, segments=transcript.segments)
+    annotate_segments_with_overlaps(transcript.segments, overlap_regions)
+
+    annotate_segments_with_confidence(transcript.segments, overlap_regions)
 
     dominance = interaction_meta.get("dominance", {})
     total_dur = float(wav.size / sample_rate) if sample_rate else 0.0

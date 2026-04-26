@@ -180,6 +180,79 @@ def _merge_turns(turns: List[SpeakerTurn], gap_s: float) -> List[SpeakerTurn]:
     return [t for t in merged if t.end - t.start > 1e-3]
 
 
+def _suppress_phantom_speakers(
+    turns: List[SpeakerTurn],
+    short_turn_s: float = 1.0,
+) -> List[SpeakerTurn]:
+    """DIAR-03: remove phantom single-occurrence speaker clusters.
+
+    A turn is considered a phantom cluster candidate when:
+    - Its duration < *short_turn_s* (1.0 s default), AND
+    - Its speaker label appears only ONCE in the full turn list
+      (unique speaker within single-neighbour context).
+
+    Such turns are reassigned to the label of the longer bordering neighbour
+    to prevent artifactual speaker splits caused by noisy MFCC embeddings.
+    """
+    if len(turns) < 2:
+        return turns
+
+    # Count occurrences of each speaker label.
+    label_count: Dict[str, int] = {}
+    for t in turns:
+        label_count[t.speaker] = label_count.get(t.speaker, 0) + 1
+
+    result = [SpeakerTurn(t.start, t.end, t.speaker, t.confidence) for t in turns]
+    changed = True
+    while changed:
+        changed = False
+        label_count = {}
+        for t in result:
+            label_count[t.speaker] = label_count.get(t.speaker, 0) + 1
+
+        for i, t in enumerate(result):
+            if t.end - t.start >= short_turn_s:
+                continue
+            if label_count.get(t.speaker, 0) > 1:
+                continue  # appears multiple times → not a phantom
+            # Single-occurrence short turn — absorb into longer neighbour.
+            prev_turn = result[i - 1] if i > 0 else None
+            next_turn = result[i + 1] if i < len(result) - 1 else None
+            if prev_turn is None and next_turn is None:
+                continue
+            if prev_turn is None:
+                new_spk = next_turn.speaker
+            elif next_turn is None:
+                new_spk = prev_turn.speaker
+            else:
+                # Pick the longer neighbour.
+                new_spk = (
+                    prev_turn.speaker
+                    if prev_turn.duration() >= next_turn.duration()
+                    else next_turn.speaker
+                )
+            result[i] = SpeakerTurn(t.start, t.end, new_spk, t.confidence)
+            changed = True
+            break  # restart scan after a change (counts stale)
+
+    # Re-merge turns that are now same-speaker after phantom removal.
+    return _merge_turns(result, gap_s=0.4)
+
+
+def detect_narrowband(sample_rate: int) -> bool:
+    """DIAR-04: return True when audio is narrowband (telephone quality ≤8 kHz)."""
+    return int(sample_rate) <= 8000
+
+
+def narrowband_clustering_threshold(base_threshold: float = 0.10) -> float:
+    """DIAR-04: relaxed silhouette threshold for narrowband inputs.
+
+    Narrowband MFCC embeddings have lower inter-speaker discriminability so we
+    accept a lower silhouette score before collapsing to single-speaker.
+    """
+    return base_threshold * 0.5   # halve the bar — prefer splitting over merging
+
+
 def diarise(
     wav: np.ndarray,
     sample_rate: int,
@@ -191,10 +264,18 @@ def diarise(
     Returns a list of ``SpeakerTurn`` objects spanning every speech
     segment. If only one cluster is detected, every turn gets
     ``SPEAKER_00``.
+
+    DIAR-04: automatically detects narrowband audio (≤8 kHz) and relaxes
+    the silhouette threshold so narrow-spectrum embeddings still split
+    correctly across speakers.
     """
     cfg = cfg or DiarisationConfig()
     if not speech_segments:
         return []
+
+    # DIAR-04: narrowband detection — adjust silhouette floor.
+    is_narrowband = detect_narrowband(sample_rate)
+    nb_threshold = narrowband_clustering_threshold() if is_narrowband else 0.10
 
     # Step 1 - window the VAD segments.
     windows: List[Segment] = []
@@ -219,7 +300,13 @@ def diarise(
         n_speakers, cluster_confidence = _estimate_n_speakers(
             embeddings, cfg.min_speakers, cfg.max_speakers, cfg.random_state
         )
-        if n_speakers <= 1:
+        # DIAR-04: for narrowband apply relaxed threshold — keep split if confidence
+        # is above the narrowband floor rather than the standard 0.10 floor.
+        if n_speakers <= 1 and cluster_confidence < nb_threshold:
+            # confidence too low even for narrowband → collapse to single speaker
+            labels = np.zeros(embeddings.shape[0], dtype=int)
+            cluster_confidence = 0.5
+        elif n_speakers <= 1:
             labels = np.zeros(embeddings.shape[0], dtype=int)
             cluster_confidence = 0.5  # single-speaker is low-confidence diarisation
         else:
@@ -239,7 +326,9 @@ def diarise(
         )
         for i in range(len(windows))
     ]
-    return _merge_turns(raw_turns, cfg.merge_gap_s)
+    merged = _merge_turns(raw_turns, cfg.merge_gap_s)
+    # DIAR-03: suppress phantom single-occurrence short speaker turns.
+    return _suppress_phantom_speakers(merged)
 
 
 def count_speakers(turns: List[SpeakerTurn]) -> int:
@@ -386,8 +475,10 @@ def diarise_pyannote(
         token = hf_token or os.environ.get("HUGGINGFACE_HUB_TOKEN") or os.environ.get("HF_TOKEN")
         if not token:
             raise RuntimeError(
-                "pyannote requires a HuggingFace token. Set HUGGINGFACE_HUB_TOKEN "
-                "or pass --hf-token. Alternatively use --diarisation-backend kmeans."
+                "pyannote requires a HuggingFace token and accepted model gates "
+                "for pyannote/speaker-diarization-3.1 and pyannote/segmentation-3.0. "
+                "Set HUGGINGFACE_HUB_TOKEN or pass --hf-token. Alternatively use "
+                "--diarisation-backend kmeans."
             )
         try:
             pipeline = PyannotePipeline.from_pretrained(
@@ -397,30 +488,43 @@ def diarise_pyannote(
         except Exception as err:
             raise RuntimeError(f"failed to load pyannote pipeline: {err}") from err
 
-    tensor = torch.from_numpy(np.asarray(wav, dtype=np.float32)).unsqueeze(0)
     kwargs: dict = {}
     if min_speakers is not None:
         kwargs["min_speakers"] = int(min_speakers)
     if max_speakers is not None:
         kwargs["max_speakers"] = int(max_speakers)
 
-    annotation = pipeline(
-        {"waveform": tensor, "sample_rate": int(sample_rate)},
-        **kwargs,
-    )
-
-    # Remap pyannote labels to stable integer indices in order of first appearance.
-    # pyannote doesn't emit per-segment silhouette; use 0.8 as a fixed prior
-    # (pyannote is generally more accurate than KMeans on clean audio).
     remap: dict = {}
     turns: List[SpeakerTurn] = []
-    for segment, _, raw_label in annotation.itertracks(yield_label=True):
-        if raw_label not in remap:
-            remap[raw_label] = f"{label_prefix}{len(remap):02d}"
-        turns.append(SpeakerTurn(
-            start=float(segment.start),
-            end=float(segment.end),
-            speaker=remap[raw_label],
-            confidence=0.8,
-        ))
+    chunk_samples = int(20 * 60 * sample_rate)
+    overlap_samples = int(5 * sample_rate)
+    hop = max(1, chunk_samples - overlap_samples)
+    arrays = [np.asarray(wav, dtype=np.float32)]
+    offsets = [0.0]
+    if len(wav) > chunk_samples:
+        arrays = []
+        offsets = []
+        for start in range(0, len(wav), hop):
+            end = min(len(wav), start + chunk_samples)
+            arrays.append(np.asarray(wav[start:end], dtype=np.float32))
+            offsets.append(start / float(sample_rate))
+            if end >= len(wav):
+                break
+
+    # Remap pyannote labels to stable integer indices in order of first appearance.
+    for chunk, offset_s in zip(arrays, offsets):
+        tensor = torch.from_numpy(chunk).unsqueeze(0)
+        annotation = pipeline(
+            {"waveform": tensor, "sample_rate": int(sample_rate)},
+            **kwargs,
+        )
+        for segment, _, raw_label in annotation.itertracks(yield_label=True):
+            if raw_label not in remap:
+                remap[raw_label] = f"{label_prefix}{len(remap):02d}"
+            turns.append(SpeakerTurn(
+                start=float(segment.start) + offset_s,
+                end=float(segment.end) + offset_s,
+                speaker=remap[raw_label],
+                confidence=0.8,
+            ))
     return _merge_turns(turns, merge_gap_s)

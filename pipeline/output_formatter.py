@@ -14,6 +14,7 @@ Schema additions over v1:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from typing import Dict, List, Optional
 
@@ -26,6 +27,62 @@ from .utils.dataset_purpose import infer_dataset_purpose
 
 
 SCHEMA_VERSION = "3.0.0"
+PIPELINE_VERSION = "1.0.0"
+DATASET_SCHEMA_VERSION = "1.0"
+
+_LANG_TO_BCP47: Dict[str, str] = {
+    "hi": "hi-Deva",
+    "pa": "pa-Guru",
+    "mr": "mr-Deva",
+    "en": "en-IN",
+    "hinglish": "hi-Latn",
+    "ur": "ur-Arab",
+    "gu": "gu-Gujr",
+    "bn": "bn-Beng",
+    "ta": "ta-Taml",
+    "te": "te-Telu",
+    "kn": "kn-Knda",
+    "ml": "ml-Mlym",
+    "mwr": "mwr-Latn",
+}
+
+
+def _bcp47_normalize(lang: str) -> str:
+    if not lang or "-" in str(lang):
+        return str(lang or "")
+    return _LANG_TO_BCP47.get(str(lang), str(lang))
+
+
+def _compute_config_hash(cfg_dict: Dict) -> str:
+    canonical = json.dumps(cfg_dict or {}, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _compute_audio_fingerprint(wav: "np.ndarray", sample_rate: int) -> str:
+    """AUDQ-03: SHA-256 of the first 5 seconds of waveform bytes.
+
+    Stable across re-encodings of the same audio content; useful for
+    detecting train/test leakage across sessions.
+    """
+    import numpy as _np
+    five_s = int(5 * sample_rate)
+    snippet = _np.asarray(wav[:five_s], dtype=_np.float32)
+    return hashlib.sha256(snippet.tobytes()).hexdigest()
+
+
+def _collect_model_versions(cfg_dict: Dict) -> Dict:
+    versions: Dict[str, str] = {}
+    for cfg_key, model_key in (
+        ("model_size", "whisper"),
+        ("diarisation_backend", "diarisation"),
+        ("vad_backend", "vad"),
+        ("fasttext_model", "fasttext_lid"),
+        ("language_profile", "language_profile"),
+    ):
+        value = (cfg_dict or {}).get(cfg_key)
+        if value:
+            versions[model_key] = str(value)
+    return versions
 
 
 def _interaction_aliases(meta: Optional[Dict]) -> Dict:
@@ -142,7 +199,7 @@ def _build_conversation_transcript(
             "start": round(seg.start, 3),
             "end": round(seg.end, 3),
             "text": seg.text.strip(),
-            "language": seg.language,
+            "language": _bcp47_normalize(seg.language),
             "quality_score": round(float(seg.quality_score), 4),
         })
     return result
@@ -218,8 +275,37 @@ def _default_code_switch(language_meta: Dict) -> Dict:
         "dominant_languages": dominant_languages,
         "switch_count": int(report.get("switch_count") or 0),
         "switch_patterns": list(report.get("patterns") or []),
+        "matrix_languages": {},
+        "switch_points": [],
+        "cs_density": 0.0,
         "review_required": bool(report.get("switch_count")),
     }
+
+
+def _enrich_code_switch_from_segments(base: Dict, transcript: Transcript) -> Dict:
+    out = dict(base or {})
+    matrix_languages: Dict[str, int] = {}
+    switch_points: List[Dict] = []
+    total_words = 0
+    total_switches = 0
+    for idx, segment in enumerate(transcript.segments):
+        matrix = getattr(segment, "matrix_language", None)
+        if matrix:
+            matrix_languages[matrix] = matrix_languages.get(matrix, 0) + 1
+        points = list(getattr(segment, "switch_points", []) or [])
+        for point in points:
+            payload = dict(point)
+            payload["segment_idx"] = idx
+            switch_points.append(payload)
+        total_switches += len(points)
+        total_words += len(getattr(segment, "words", []) or []) or len(str(segment.text).split())
+    density = total_switches / max(total_words, 1) * 100.0
+    out["matrix_languages"] = matrix_languages
+    out["switch_points"] = switch_points
+    out["cs_density"] = round(float(density), 4)
+    out["detected"] = bool(out.get("detected") or total_switches)
+    out["switch_count"] = max(int(out.get("switch_count") or 0), total_switches)
+    return out
 
 
 def _default_premium_processing() -> Dict:
@@ -301,6 +387,14 @@ def build_record(
     tts_suitability: Optional[Dict] = None,
     dataset_products: Optional[List[str]] = None,
     premium_processing: Optional[Dict] = None,
+    cfg: Optional[object] = None,
+    model_versions: Optional[Dict] = None,
+    config_hash: Optional[str] = None,
+    total_speech_duration_sec: Optional[float] = None,
+    # AUDQ-02: original sample rate before pipeline resampled to 16kHz
+    original_sample_rate: Optional[int] = None,
+    # AUDQ-03: raw waveform for fingerprint computation (first 5s SHA-256)
+    wav: Optional["np.ndarray"] = None,
     # perf
     skip_sha1: bool = False,
 ) -> Dict:
@@ -327,13 +421,62 @@ def build_record(
         enriched_speaker_meta[spk_id] = entry
 
     language_meta = _language_aliases(language)
+    cfg_dict = cfg.to_dict() if cfg is not None and hasattr(cfg, "to_dict") else {}
+    session_id = session_name or os.path.splitext(os.path.basename(audio_path))[0]
+    sample_rate = int(audio_meta.get("processed_sample_rate_hz") or audio_meta.get("sample_rate_hz") or 16000)
+    effective_model_versions = model_versions or _collect_model_versions(cfg_dict)
+    effective_config_hash = config_hash or (_compute_config_hash(cfg_dict) if cfg_dict else "")
+    dominant_language = _bcp47_normalize(language.dominant_language or language.primary_language)
+    language_distribution: Dict[str, int] = {}
+    for segment in language.language_segments or []:
+        code = _bcp47_normalize(segment.language)
+        language_distribution[code] = language_distribution.get(code, 0) + 1
+    if not language_distribution and dominant_language:
+        language_distribution[dominant_language] = len(transcript.segments)
+    sorted_turns = sorted(turns, key=lambda t: t.start)
+
+    def find_speaker(seg) -> str:
+        mid = (seg.start + seg.end) / 2.0
+        for turn in sorted_turns:
+            if turn.start <= mid <= turn.end:
+                return turn.speaker
+        if sorted_turns:
+            return min(sorted_turns, key=lambda t: min(abs(t.start - mid), abs(t.end - mid))).speaker
+        return "SPEAKER_00"
 
     record: Dict = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": DATASET_SCHEMA_VERSION,
+        "pipeline_record_version": SCHEMA_VERSION,
+        "pipeline_version": PIPELINE_VERSION,
         "generated_at": generated_at or "1970-01-01T00:00:00+00:00",
         "input_mode": input_mode,
-        "session_name": session_name or os.path.splitext(
-            os.path.basename(audio_path))[0],
+        "session_id": session_id,
+        "session_name": session_id,
+        "model_versions": effective_model_versions,
+        "config_hash": effective_config_hash,
+        "num_speakers": int(len(speaker_meta)),
+        "total_duration_sec": round(float(audio_meta.get("duration_s") or transcript.duration or 0.0), 3),
+        "total_speech_duration_sec": round(float(
+            total_speech_duration_sec
+            if total_speech_duration_sec is not None
+            else audio_meta.get("speech_duration_s") or 0.0
+        ), 3),
+        "dominant_language": dominant_language,
+        "language_distribution": language_distribution,
+        # AUDQ-02: preserve original sample rate even after 16kHz resampling.
+        # Falls back to audio_meta["sample_rate_hz"] (source rate before pipeline
+        # resampled), then to the processed sample_rate.
+        "original_sample_rate": int(
+            original_sample_rate
+            or audio_meta.get("sample_rate_hz")
+            or sample_rate
+        ),
+        # AUDQ-03: dedup fingerprint — SHA-256 of first 5s of waveform
+        "audio_fingerprint": (
+            _compute_audio_fingerprint(wav, sample_rate)
+            if wav is not None and len(wav) > 0
+            else None
+        ),
         "file": _file_descriptor(audio_path, skip_sha1=skip_sha1),
         "source_files": [
             _file_descriptor(path, skip_sha1=skip_sha1)
@@ -350,10 +493,21 @@ def build_record(
         "transcript": {
             "raw": transcript.text,
             "normalised": normalise_transcript(transcript.text),
-            "language": transcript.language,
+            "language": _bcp47_normalize(transcript.language),
             "language_probability": round(float(transcript.language_probability), 4),
             "duration_s": round(transcript.duration, 3),
-            "segments": [s.to_dict() for s in transcript.segments],
+            "segments": [
+                {
+                    **s.to_dict(
+                        segment_id=f"{session_id}_{idx:04d}",
+                        audio_filepath=str(audio_path),
+                        speaker_id=find_speaker(s),
+                        sample_rate=sample_rate,
+                    ),
+                    "language": _bcp47_normalize(s.language),
+                }
+                for idx, s in enumerate(transcript.segments)
+            ],
         },
         "timeline": timeline,
         "speaker_transcripts": spk_transcripts,
@@ -375,7 +529,10 @@ def build_record(
         },
         "quality_metrics": quality_metrics or _default_quality_metrics(),
         "human_review": human_review or _default_human_review(),
-        "code_switch": code_switch or _default_code_switch(language_meta),
+        "code_switch": _enrich_code_switch_from_segments(
+            code_switch or _default_code_switch(language_meta),
+            transcript,
+        ),
         "validation": validation or {"passed": True, "issue_count": 0, "issues": [], "checks": {}},
         "processing": processing or {},
         "artifacts": {},

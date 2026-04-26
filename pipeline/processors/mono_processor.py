@@ -273,6 +273,10 @@ def process_single(
         generated_at=cfg.generated_at,
         quality_targets=quality_targets,
         quality_metrics=quality_metrics,
+        cfg=cfg,
+        total_speech_duration_sec=sum(end - start for start, end in speech),
+        original_sample_rate=getattr(clip, "original_sample_rate", None) or clip.sample_rate,
+        wav=wav,
         skip_sha1=cfg.skip_sha1,
     )
     record["human_review"] = human_review

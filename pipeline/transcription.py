@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
+import unicodedata as _uc
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -73,6 +74,22 @@ def compute_quality_score(
     return float(np.clip(score, 0.0, 1.0))
 
 Segment = Tuple[float, float]
+_PIPELINE_SAMPLE_RATE = 16_000
+
+
+def _text_normalized(text: str) -> str:
+    """Lowercase and strip punctuation for WER scoring."""
+    text = _uc.normalize("NFC", str(text or "").lower())
+    kept = []
+    for ch in text:
+        if ch.isspace():
+            kept.append(" ")
+            continue
+        category = _uc.category(ch)
+        if category.startswith(("P", "S")):
+            continue
+        kept.append(ch)
+    return " ".join("".join(kept).split())
 
 
 @dataclass
@@ -81,6 +98,10 @@ class Word:
     start: float
     end: float
     probability: float = 1.0
+    language: str | None = None
+    language_confidence: float | None = None
+    script: str | None = None
+    trailing_punct: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +109,14 @@ class Word:
             "start": round(self.start, 3),
             "end": round(self.end, 3),
             "probability": round(float(self.probability), 4),
+            "language": self.language,
+            "language_confidence": (
+                round(float(self.language_confidence), 4)
+                if self.language_confidence is not None
+                else None
+            ),
+            "script": self.script,
+            "trailing_punct": self.trailing_punct,
         }
 
 
@@ -104,18 +133,67 @@ class TranscriptSegment:
     quality_score: float = 0.0
     words: List[Word] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(
+        self,
+        *,
+        segment_id: Optional[str] = None,
+        audio_filepath: Optional[str] = None,
+        speaker_id: Optional[str] = None,
+        sample_rate: int = _PIPELINE_SAMPLE_RATE,
+    ) -> dict:
+        duration = round(max(0.0, self.end - self.start), 3)
+        missing = []
+        if not getattr(self, "punctuation_applied", False):
+            missing.append("punctuation")
+        if not hasattr(self, "snr_db"):
+            missing.append("snr_db")
+        if not hasattr(self, "confidence"):
+            missing.append("confidence")
         return {
+            "segment_id": segment_id or "",
+            "audio_filepath": audio_filepath or "",
             "start": round(self.start, 3),
             "end": round(self.end, 3),
+            "duration": duration,
+            "speaker_id": speaker_id or "",
             "text": self.text,
+            "text_normalized": _text_normalized(self.text),
             "language": self.language,
+            "sample_rate": int(sample_rate),
             "avg_logprob": round(float(self.avg_logprob), 4),
             "compression_ratio": round(float(self.compression_ratio), 4),
             "no_speech_prob": round(float(self.no_speech_prob), 4),
             "rms_db": round(float(self.rms_db), 2),
             "quality_score": round(float(self.quality_score), 4),
             "words": [w.to_dict() for w in self.words],
+            "snr_db": (
+                round(float(getattr(self, "snr_db")), 2)
+                if getattr(self, "snr_db", None) is not None
+                else None
+            ),
+            "snr_band": getattr(self, "snr_band", None),
+            "snr_reason": getattr(self, "snr_reason", None),
+            "snr_source": getattr(self, "snr_source", None),
+            "snr_quality": getattr(self, "snr_quality", None),
+            "clipping_ratio": round(float(getattr(self, "clipping_ratio", 0.0) or 0.0), 4),
+            "overlap": bool(getattr(self, "overlap", False)),
+            # OVER-01: full overlap metadata fields
+            "overlap_type": getattr(self, "overlap_type", None),
+            "overlap_speakers": list(getattr(self, "overlap_speakers", []) or []),
+            "overlap_start": getattr(self, "overlap_start", None),
+            "overlap_end": getattr(self, "overlap_end", None),
+            "confidence": getattr(self, "confidence", None),
+            "confidence_band": getattr(self, "confidence_band", None),
+            "confidence_band_absolute": getattr(self, "confidence_band_absolute", None),
+            "confidence_band_relative": getattr(self, "confidence_band_relative", None),
+            "confidence_reasons": list(getattr(self, "confidence_reasons", []) or []),
+            "confidence_components": dict(getattr(self, "confidence_components", {}) or {}),
+            "punctuation_applied": bool(getattr(self, "punctuation_applied", False)),
+            "punct_skipped": getattr(self, "punct_skipped", None),
+            "matrix_language": getattr(self, "matrix_language", self.language),
+            "switch_points": list(getattr(self, "switch_points", []) or []),
+            "cs_density": round(float(getattr(self, "cs_density", 0.0) or 0.0), 4),
+            "missing_fields": missing,
         }
 
 
