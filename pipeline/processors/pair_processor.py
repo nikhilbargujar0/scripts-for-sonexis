@@ -391,7 +391,7 @@ def process_speaker_pair(
         quality_metrics=quality_metrics,
         cfg=cfg,
         total_speech_duration_sec=sum(end - start for start, end in mixed_speech),
-        original_sample_rate=getattr(pair.mixed, "original_sample_rate", None) or pair.mixed.sample_rate,
+        original_sample_rate=pair.mixed.source_sample_rate or pair.mixed.sample_rate,
         wav=mixed_wav,
         skip_sha1=cfg.skip_sha1,
         input_alignment=alignment,

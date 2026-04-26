@@ -296,11 +296,11 @@ def _assign_words_to_speakers(
         return out
 
     def find_speaker(t: float) -> str:
-        # Binary search-lite: turns are sorted and non-overlapping after merge.
         for turn in turns:
+            if turn.start > t:
+                break
             if turn.start <= t < turn.end:
                 return turn.speaker
-        # Fall back to the nearest turn.
         nearest = min(turns, key=lambda tn: min(abs(tn.start - t), abs(tn.end - t)))
         return nearest.speaker
 
