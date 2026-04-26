@@ -128,13 +128,72 @@ def detect_speech_silero(
     )
 
 
+def _detect_speech_energy(
+    wav: np.ndarray,
+    sample_rate: int,
+    cfg: VADConfig | None = None,
+) -> List[Segment]:
+    """Pure-numpy energy-based VAD. No external deps.
+
+    Last-resort fallback when webrtcvad is not installed (common on Colab).
+    Threshold = 15 % of global RMS so it adapts to recording level.
+    """
+    cfg = cfg or VADConfig()
+    total = len(wav)
+    if total == 0:
+        return []
+    frame_len = max(1, int(sample_rate * cfg.frame_ms / 1000))
+    global_rms = float(np.sqrt(np.mean(wav.astype(np.float64) ** 2))) + 1e-9
+    threshold = global_rms * 0.15
+
+    raw: List[Segment] = []
+    open_start = None
+    for i in range(0, total, frame_len):
+        frame = wav[i : i + frame_len]
+        if len(frame) == 0:
+            break
+        rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+        t = i / sample_rate
+        is_speech = rms >= threshold
+        if is_speech and open_start is None:
+            open_start = t
+        elif not is_speech and open_start is not None:
+            raw.append((open_start, t))
+            open_start = None
+    if open_start is not None:
+        raw.append((open_start, total / sample_rate))
+
+    min_len = cfg.min_speech_ms / 1000.0
+    raw = [(s, e) for s, e in raw if (e - s) >= min_len]
+    return _merge_segments(
+        raw,
+        min_silence=cfg.min_silence_ms / 1000.0,
+        pad=cfg.pad_ms / 1000.0,
+        total_duration=total / sample_rate,
+    )
+
+
 def detect_speech(
     wav: np.ndarray,
     sample_rate: int,
     backend: str = "webrtc",
     cfg: VADConfig | None = None,
 ) -> List[Segment]:
-    """Unified entry point. ``backend`` in {"webrtc", "silero"}."""
+    """Unified entry point. ``backend`` in {"webrtc", "silero", "energy"}.
+
+    Fallback chain for backend="webrtc":
+      webrtcvad (fast, offline) → energy (numpy-only, no install needed)
+    Install webrtcvad on Colab with: pip install webrtcvad-wheels
+    """
     if backend == "silero":
         return detect_speech_silero(wav, sample_rate, cfg)
-    return detect_speech_webrtc(wav, sample_rate, cfg)
+    if backend == "energy":
+        return _detect_speech_energy(wav, sample_rate, cfg)
+    try:
+        return detect_speech_webrtc(wav, sample_rate, cfg)
+    except ImportError:
+        log.warning(
+            "webrtcvad not installed (pip install webrtcvad-wheels); "
+            "falling back to energy-based VAD"
+        )
+        return _detect_speech_energy(wav, sample_rate, cfg)

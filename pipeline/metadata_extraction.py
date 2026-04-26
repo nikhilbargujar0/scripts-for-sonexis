@@ -39,7 +39,7 @@ Segment = Tuple[float, float]
 def _rms_db(wav: np.ndarray) -> float:
     if wav.size == 0:
         return -120.0
-    rms = float(np.sqrt(np.mean(np.square(wav, dtype=np.float64))))
+    rms = float(np.sqrt(np.mean(wav.astype(np.float64) ** 2)))
     if rms < 1e-9:
         return -120.0
     return 20.0 * math.log10(rms)

@@ -21,8 +21,18 @@ Choosing input_type:
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
+
+
+def _detect_device() -> str:
+    """Return 'cuda' if a CUDA GPU is visible, else 'cpu'. No crash if torch absent."""
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
 
 
 @dataclass
@@ -151,6 +161,39 @@ class PipelineConfig:
     })
     word_accuracy_target: float = 0.98
     code_switch_accuracy_target: float = 0.98
+
+    def resolve(self) -> "PipelineConfig":
+        """Resolve computed defaults in-place and return self.
+
+        - device="auto"  → detected CUDA/CPU
+        - compute_type="int8" on CUDA → upgraded to "float16"
+        """
+        if self.device == "auto":
+            self.device = _detect_device()
+        if self.device == "cuda" and self.compute_type == "int8":
+            self.compute_type = "float16"
+        return self
+
+    @classmethod
+    def colab_defaults(cls, **kwargs) -> "PipelineConfig":
+        """Return a PipelineConfig tuned for Google Colab.
+
+        Differences from stock defaults:
+          - offline_mode=False  (Colab has internet; models download from HF)
+          - device="auto"       (resolves to cuda if T4/V100/A100 attached)
+          - compute_type auto-upgraded to float16 on GPU
+          - ask_metadata=False  (stdin is not a tty in notebook cells)
+
+        Any kwarg overrides the Colab default:
+            cfg = PipelineConfig.colab_defaults(model_size="medium")
+        """
+        defaults: Dict = dict(
+            offline_mode=False,
+            device="auto",
+            ask_metadata=False,
+        )
+        defaults.update(kwargs)
+        return cls(**defaults).resolve()
 
     def to_dict(self) -> dict:
         return asdict(self)

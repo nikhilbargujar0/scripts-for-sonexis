@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from pipeline.config import PipelineConfig
+from pipeline.config import PipelineConfig, _detect_device
 from pipeline.runner import process_conversation
 
 
@@ -37,11 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["auto", "separate", "speaker_pair", "stereo", "mono"])
     p.add_argument("--output_mode", "--output-mode", default="both",
                    choices=["speaker_separated", "mono", "both"])
-    p.add_argument("--offline_mode", "--offline-mode", default="true")
+    p.add_argument("--colab", default="false",
+                   help="Shorthand for Colab: sets offline_mode=false, device=auto, "
+                        "compute_type=float16, ask_metadata=false. "
+                        "Individual flags still override these defaults.")
+    p.add_argument("--offline_mode", "--offline-mode", default=None,
+                   help="default: true normally, false when --colab is set")
     p.add_argument("--model_dir", "--model-dir", default=None)
     p.add_argument("--model_size", "--model-size", default="small")
-    p.add_argument("--compute_type", "--compute-type", default="int8")
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--compute_type", "--compute-type", default=None,
+                   help="default: int8 (cpu) or float16 (cuda). "
+                        "Pass 'auto' or omit to let the pipeline choose.")
+    p.add_argument("--device", default=None,
+                   help="cpu | cuda | auto  (default: cpu, or auto when --colab)")
     p.add_argument("--language", default=None)
     p.add_argument("--metadata_file", "--metadata-file", default=None)
     p.add_argument("--accent", default=None)
@@ -68,14 +76,26 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     input_type = "speaker_pair" if args.input_type == "separate" else args.input_type
     premium_cfg = _load_premium_config(args.premium_config)
+
+    # --colab sets sensible Colab defaults; individual flags still win.
+    colab = _bool(args.colab)
+    offline_mode = _bool(args.offline_mode) if args.offline_mode is not None else (not colab)
+    device = args.device if args.device is not None else ("auto" if colab else "cpu")
+    # Resolve "auto" device now so compute_type default can react to it.
+    resolved_device = _detect_device() if device == "auto" else device
+    if args.compute_type is not None and args.compute_type != "auto":
+        compute_type = args.compute_type
+    else:
+        compute_type = "float16" if resolved_device == "cuda" else "int8"
+
     cfg = PipelineConfig(
         input_type=input_type,
         output_mode=args.output_mode,
-        offline_mode=_bool(args.offline_mode),
+        offline_mode=offline_mode,
         model_dir=args.model_dir,
         model_size=args.model_size,
-        compute_type=args.compute_type,
-        device=args.device,
+        compute_type=compute_type,
+        device=resolved_device,
         language=args.language,
         metadata_file=args.metadata_file,
         accent=args.accent,
