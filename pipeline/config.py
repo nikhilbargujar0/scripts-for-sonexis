@@ -54,6 +54,7 @@ class PipelineConfig:
     compute_type: str = "int8"
     device: str = "cpu"               # cpu | cuda | auto
     language: Optional[str] = None   # None = auto-detect
+    initial_prompt: Optional[str] = None  # Whisper conditioning prompt
 
     # ── VAD ───────────────────────────────────────────────────────────
     vad_backend: str = "webrtc"       # webrtc | silero

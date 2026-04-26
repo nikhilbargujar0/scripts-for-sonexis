@@ -48,6 +48,28 @@ def compute_total_speech_duration(speech_segments) -> float:
     return float(sum(float(end) - float(start) for start, end in speech_segments))
 
 
+_LANG_PROMPTS: Dict[str, str] = {
+    "hi": (
+        "यह हिंदी और अंग्रेजी मिश्रित (Hinglish) बातचीत है। "
+        "वक्ता हिंदी और अंग्रेजी दोनों में बोलते हैं। "
+        "This is a Hinglish conversation mixing Hindi and English."
+    ),
+    "ta": "இது தமிழ் மற்றும் ஆங்கிலம் கலந்த உரையாடல்.",
+    "te": "ఇది తెలుగు మరియు ఇంగ్లీష్ మిశ్రిత సంభాషణ.",
+    "mr": "हे मराठी आणि इंग्रजी मिश्रित संभाषण आहे.",
+    "bn": "এটি বাংলা এবং ইংরেজি মিশ্রিত কথোপকথন।",
+    "gu": "આ ગુજરાતી અને અંગ્રેજી મિશ્રિત વાર્તાલાપ છે.",
+    "pa": "ਇਹ ਪੰਜਾਬੀ ਅਤੇ ਅੰਗਰੇਜ਼ੀ ਮਿਸ਼ਰਤ ਗੱਲਬਾਤ ਹੈ।",
+}
+
+
+def _resolve_initial_prompt(cfg: PipelineConfig) -> Optional[str]:
+    if getattr(cfg, "initial_prompt", None):
+        return cfg.initial_prompt
+    lang = (cfg.language or "").lower().split("-")[0]
+    return _LANG_PROMPTS.get(lang)
+
+
 def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
     model_path = whisper_local_path(model_dir, cfg.model_size) if model_dir else None
     device = cfg.device if cfg.device != "auto" else _detect_device()
@@ -66,6 +88,7 @@ def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
         batched=cfg.asr_batched,
         batch_size=cfg.asr_batch_size,
         cpu_threads=cfg.asr_cpu_threads,
+        initial_prompt=_resolve_initial_prompt(cfg),
     )
 
 

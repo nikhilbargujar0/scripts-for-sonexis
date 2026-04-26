@@ -63,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pair_min_turn_duration_s", "--pair-min-turn-duration-s", type=float, default=0.08)
     p.add_argument("--random_seed", "--random-seed", type=int, default=0)
     p.add_argument("--fail_fast", "--fail-fast", default="false")
+    p.add_argument("--beam_size", "--beam-size", type=int, default=5,
+                   help="Whisper beam size (5=default quality, 1=greedy/fast)")
+    p.add_argument("--asr_batched", "--asr-batched", default="false",
+                   help="Use BatchedInferencePipeline for ~2-3x faster decoding on GPU")
+    p.add_argument("--denoise", default="false",
+                   help="Apply noise reduction before ASR (helps with background noise)")
+    p.add_argument("--initial_prompt", "--initial-prompt", default=None,
+                   help="Whisper conditioning prompt. Auto-set for hi/ta/te/mr/bn/gu/pa.")
     p.add_argument("--pipeline_mode", "--pipeline-mode", default="offline_standard",
                    choices=["offline_standard", "premium_accuracy"])
     p.add_argument("--allow_paid_apis", "--allow-paid-apis", default="false")
@@ -109,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         pair_min_turn_duration_s=args.pair_min_turn_duration_s,
         random_seed=args.random_seed,
         fail_fast=_bool(args.fail_fast),
+        beam_size=args.beam_size,
+        asr_batched=_bool(args.asr_batched),
+        denoise=_bool(args.denoise),
+        initial_prompt=args.initial_prompt,
         ask_metadata=False,
         pipeline_mode=args.pipeline_mode,
         allow_paid_apis=_bool(args.allow_paid_apis),
