@@ -63,11 +63,21 @@ _LANG_PROMPTS: Dict[str, str] = {
 }
 
 
+_GENERIC_MULTILINGUAL_PROMPT = (
+    "This conversation may include Hindi, English, or other Indian languages. "
+    "यह बातचीत हिंदी, अंग्रेजी या अन्य भारतीय भाषाओं में हो सकती है।"
+)
+
+
 def _resolve_initial_prompt(cfg: PipelineConfig) -> Optional[str]:
     if getattr(cfg, "initial_prompt", None):
         return cfg.initial_prompt
     lang = (cfg.language or "").lower().split("-")[0]
-    return _LANG_PROMPTS.get(lang)
+    if lang:
+        return _LANG_PROMPTS.get(lang)
+    # language=None (auto-detect): inject generic multilingual prompt so
+    # Whisper doesn't default to English-only decoding on mixed-script audio.
+    return _GENERIC_MULTILINGUAL_PROMPT
 
 
 def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
@@ -89,6 +99,10 @@ def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
         batch_size=cfg.asr_batch_size,
         cpu_threads=cfg.asr_cpu_threads,
         initial_prompt=_resolve_initial_prompt(cfg),
+        no_speech_threshold=getattr(cfg, "no_speech_threshold", 0.6),
+        compression_ratio_threshold=getattr(cfg, "compression_ratio_threshold", 2.4),
+        log_prob_threshold=getattr(cfg, "log_prob_threshold", -1.0),
+        condition_on_previous_text=getattr(cfg, "condition_on_previous_text", False),
     )
 
 

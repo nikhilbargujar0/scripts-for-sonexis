@@ -71,6 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Apply noise reduction before ASR (helps with background noise)")
     p.add_argument("--initial_prompt", "--initial-prompt", default=None,
                    help="Whisper conditioning prompt. Auto-set for hi/ta/te/mr/bn/gu/pa.")
+    p.add_argument("--no_speech_threshold", "--no-speech-threshold", type=float, default=0.6,
+                   help="Whisper no-speech probability cutoff (0-1, default 0.6)")
+    p.add_argument("--compression_ratio_threshold", "--compression-ratio-threshold",
+                   type=float, default=2.4,
+                   help="Whisper compression ratio threshold (default 2.4; raise for code-switch)")
+    p.add_argument("--log_prob_threshold", "--log-prob-threshold", type=float, default=-1.0,
+                   help="Whisper avg log-prob floor (default -1.0)")
+    p.add_argument("--condition_on_previous_text", "--condition-on-previous-text",
+                   default="false",
+                   help="Feed previous segment text as context (default false)")
+    p.add_argument("--quality_score_threshold", "--quality-score-threshold",
+                   type=float, default=0.35,
+                   help="Segment quality score below this = low quality (default 0.35)")
     p.add_argument("--pipeline_mode", "--pipeline-mode", default="offline_standard",
                    choices=["offline_standard", "premium_accuracy"])
     p.add_argument("--allow_paid_apis", "--allow-paid-apis", default="false")
@@ -121,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         asr_batched=_bool(args.asr_batched),
         denoise=_bool(args.denoise),
         initial_prompt=args.initial_prompt,
+        no_speech_threshold=args.no_speech_threshold,
+        compression_ratio_threshold=args.compression_ratio_threshold,
+        log_prob_threshold=args.log_prob_threshold,
+        condition_on_previous_text=_bool(args.condition_on_previous_text),
+        quality_score_threshold=args.quality_score_threshold,
         ask_metadata=False,
         pipeline_mode=args.pipeline_mode,
         allow_paid_apis=_bool(args.allow_paid_apis),

@@ -55,6 +55,10 @@ class PipelineConfig:
     device: str = "cpu"               # cpu | cuda | auto
     language: Optional[str] = None   # None = auto-detect
     initial_prompt: Optional[str] = None  # Whisper conditioning prompt
+    no_speech_threshold: float = 0.6
+    compression_ratio_threshold: float = 2.4
+    log_prob_threshold: float = -1.0
+    condition_on_previous_text: bool = False
 
     # ── VAD ───────────────────────────────────────────────────────────
     vad_backend: str = "webrtc"       # webrtc | silero
@@ -75,6 +79,7 @@ class PipelineConfig:
     fasttext_model: Optional[str] = None
 
     # ── quality thresholds ────────────────────────────────────────────
+    quality_score_threshold: float = 0.35  # segments below this score → "low quality"
     max_duration_mismatch_s: float = 60.0  # warn above this
     min_audio_duration_s: float = 1.0
 
