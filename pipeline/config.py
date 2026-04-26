@@ -114,6 +114,9 @@ class PipelineConfig:
     pipeline_mode: str = "offline_standard"
     allow_paid_apis: bool = False
     require_human_review: bool = True
+    punctuation_enabled: bool = True
+    punctuation_device: Optional[str] = None
+    punctuation_model: Optional[str] = None
     export_products: List[str] = field(default_factory=lambda: ["stt", "diarisation", "evaluation_gold"])
     store_transcript_candidates: bool = True
     store_candidate_segments: bool = True
@@ -174,6 +177,8 @@ class PipelineConfig:
             d["allow_paid_apis"] = d["allow_paid_apis"].lower() in ("true", "1", "yes")
         if "require_human_review" in d and isinstance(d["require_human_review"], str):
             d["require_human_review"] = d["require_human_review"].lower() in ("true", "1", "yes")
+        if "punctuation_enabled" in d and isinstance(d["punctuation_enabled"], str):
+            d["punctuation_enabled"] = d["punctuation_enabled"].lower() in ("true", "1", "yes")
         if "store_transcript_candidates" in d and isinstance(d["store_transcript_candidates"], str):
             d["store_transcript_candidates"] = d["store_transcript_candidates"].lower() in ("true", "1", "yes")
         if "store_candidate_segments" in d and isinstance(d["store_candidate_segments"], str):

@@ -44,8 +44,12 @@ except ImportError:
     _HAS_SF = False
 
 from .diarisation import SpeakerTurn
+from .exporters import export_phase4_formats
 from .monologue_extractor import Monologue
 from .products import export_products
+from .quality_tier import classify_record
+from .review_queue import write_review_queue
+from .schema_validator import validate_record
 
 
 # ── schema declaration ──────────────────────────────────────────────────────
@@ -305,6 +309,7 @@ class DatasetWriter:
 
     def write_annotation(self, session_name: str, record: Dict) -> str:
         """Write full session record. Returns abs path."""
+        validate_record(record)
         p = self.annotations_root / f"{session_name}.json"
         _write_json(p, record)
         self._log.info("Wrote annotation: %s", p)
@@ -507,6 +512,10 @@ class DatasetWriter:
         # 6. Annotation JSON
         predicted_ann_path = str((self.annotations_root / f"{session_name}.json").resolve())
         written["annotation"] = predicted_ann_path
+        classify_record(record)
+        review_path = write_review_queue(record, str(self.root))
+        if review_path:
+            written["review_queue"] = review_path
         record["artifacts"] = dict(written)
         ann_path = self.write_annotation(session_name, record)
         written["annotation"] = ann_path
@@ -515,6 +524,14 @@ class DatasetWriter:
         product_artifacts = export_products(record, str(self.root))
         if product_artifacts:
             written.update(product_artifacts)
+            record["artifacts"] = dict(written)
+            ann_path = self.write_annotation(session_name, record)
+            written["annotation"] = ann_path
+
+        # 6c. Phase 4 multi-format exports from canonical record.
+        phase4_artifacts = export_phase4_formats(record, str(self.root))
+        if phase4_artifacts:
+            written.update(phase4_artifacts)
             record["artifacts"] = dict(written)
             ann_path = self.write_annotation(session_name, record)
             written["annotation"] = ann_path

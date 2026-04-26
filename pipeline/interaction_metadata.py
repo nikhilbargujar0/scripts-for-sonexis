@@ -37,11 +37,17 @@ class OverlapSegment:
         return max(0.0, self.end - self.start)
 
     def to_dict(self) -> dict:
+        overlap_type = "backchannel" if self.is_interruption else "crosstalk"
         return {
             "start": round(self.start, 3),
             "end": round(self.end, 3),
             "speaker_a": self.speaker_a,
             "speaker_b": self.speaker_b,
+            "overlap": True,
+            "overlap_type": overlap_type,
+            "overlap_speakers": [self.speaker_a, self.speaker_b],
+            "overlap_start": round(self.start, 3),
+            "overlap_end": round(self.end, 3),
             "duration_s": round(self.duration(), 3),
             "is_interruption": self.is_interruption,
         }

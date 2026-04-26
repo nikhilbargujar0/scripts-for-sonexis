@@ -5,6 +5,15 @@
   "type": "object",
   "required": [
     "schema_version",
+    "session_id",
+    "pipeline_version",
+    "model_versions",
+    "config_hash",
+    "num_speakers",
+    "total_duration_sec",
+    "total_speech_duration_sec",
+    "dominant_language",
+    "language_distribution",
     "generated_at",
     "input_mode",
     "session_name",
@@ -94,6 +103,19 @@
   },
   "properties": {
     "schema_version": {"type": "string"},
+    "session_id": {"type": "string"},
+    "pipeline_version": {"type": "string"},
+    "pipeline_record_version": {"type": "string"},
+    "model_versions": {"type": "object", "additionalProperties": true},
+    "config_hash": {"type": "string"},
+    "num_speakers": {"type": "integer", "minimum": 0},
+    "total_duration_sec": {"type": "number", "minimum": 0},
+    "total_speech_duration_sec": {"type": "number", "minimum": 0},
+    "dominant_language": {"type": "string"},
+    "language_distribution": {
+      "type": "object",
+      "additionalProperties": {"type": "integer"}
+    },
     "generated_at": {"type": "string"},
     "input_mode": {"type": "string"},
     "session_name": {"type": "string"},
@@ -237,10 +259,85 @@
     },
     "transcript": {
       "type": "object",
-      "required": ["raw"],
+      "required": ["raw", "segments"],
       "additionalProperties": true,
       "properties": {
-        "raw": {"type": "string"}
+        "raw": {"type": "string"},
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "segment_id",
+              "audio_filepath",
+              "start",
+              "end",
+              "duration",
+              "speaker_id",
+              "language",
+              "text",
+              "text_normalized",
+              "sample_rate",
+              "missing_fields",
+              "snr_band",
+              "overlap",
+              "confidence_band",
+              "matrix_language",
+              "switch_points",
+              "cs_density",
+              "punctuation_applied"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "segment_id": {"type": "string", "minLength": 1},
+              "audio_filepath": {"type": "string"},
+              "start": {"type": "number", "minimum": 0},
+              "end": {"type": "number", "minimum": 0},
+              "duration": {"type": "number", "minimum": 0},
+              "speaker_id": {"type": "string"},
+              "language": {"type": "string"},
+              "text": {"type": "string"},
+              "text_normalized": {"type": "string"},
+              "sample_rate": {"type": "integer", "minimum": 1},
+              "missing_fields": {"type": "array", "items": {"type": "string"}},
+              "snr_db": {"type": ["number", "null"]},
+              "snr_band": {"type": ["string", "null"]},
+              "snr_reason": {"type": ["string", "null"]},
+              "snr_source": {"type": ["string", "null"]},
+              "clipping_ratio": {"type": "number", "minimum": 0},
+              "overlap": {"type": "boolean"},
+              "confidence": {"type": ["number", "null"]},
+              "confidence_band": {"type": ["string", "null"]},
+              "confidence_band_absolute": {"type": ["string", "null"]},
+              "confidence_band_relative": {"type": ["string", "null"]},
+              "confidence_reasons": {"type": "array", "items": {"type": "string"}},
+              "confidence_components": {"type": "object", "additionalProperties": true},
+              "quality_tier": {"type": "string"},
+              "tier_reasons": {"type": "array", "items": {"type": "string"}},
+              "flagged_for_review": {"type": "boolean"},
+              "review_reasons": {"type": "array", "items": {"type": "string"}}
+              ,
+              "punctuation_applied": {"type": "boolean"},
+              "punct_skipped": {"type": ["string", "null"]},
+              "matrix_language": {"type": "string"},
+              "switch_points": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["word_idx", "from_lang", "to_lang", "switch_type"],
+                  "additionalProperties": true,
+                  "properties": {
+                    "word_idx": {"type": "integer", "minimum": 0},
+                    "from_lang": {"type": "string"},
+                    "to_lang": {"type": "string"},
+                    "switch_type": {"type": "string"}
+                  }
+                }
+              },
+              "cs_density": {"type": "number", "minimum": 0}
+            }
+          }
+        }
       }
     },
     "transcript_candidates": {

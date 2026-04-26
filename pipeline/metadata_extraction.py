@@ -222,6 +222,7 @@ def extract_audio_metadata(
     rt60 = _reverb_estimate(wav, sample_rate)
     centroid = _spectral_centroid_khz(wav, sample_rate)
     bandwidth_hz, bandwidth_conf = _effective_bandwidth_hz(wav, sample_rate)
+    audio_band = "narrowband" if bandwidth_hz <= 3800 else "wideband"
     lufs_value, lufs_conf, lufs_method = _lufs_estimate(wav)
     env_value, env_conf = _classify_environment(snr_db, rt60)
     noise_value, noise_conf = _classify_noise_level(snr_db)
@@ -246,6 +247,7 @@ def extract_audio_metadata(
             bandwidth_conf,
             method="spectral_rolloff_95",
         ),
+        "audio_band": audio_band,
         "lufs": measured_field(
             lufs_value,
             lufs_conf,
