@@ -106,7 +106,8 @@ def _embed_window(
 
 
 def _estimate_n_speakers(
-    embeddings: np.ndarray, min_k: int, max_k: int, random_state: int
+    embeddings: np.ndarray, min_k: int, max_k: int, random_state: int,
+    silhouette_threshold: float = 0.10,
 ) -> Tuple[int, float]:
     """Return (n_speakers, silhouette_confidence)."""
     from sklearn.cluster import KMeans
@@ -130,8 +131,9 @@ def _estimate_n_speakers(
             continue
         if score > best_score:
             best_score, best_k = score, k
-    # 0.1 is a deliberately low bar for noisy conversational data.
-    if best_score < 0.10 and min_k <= 1:
+    # silhouette_threshold is a deliberately low bar for noisy conversational
+    # data; callers pass a lower value for narrowband audio (DIAR-04).
+    if best_score < silhouette_threshold and min_k <= 1:
         return 1, max(0.0, best_score + 0.5)
     # Map silhouette [-1..1] to confidence [0..1].
     confidence = float(np.clip((best_score + 1.0) / 2.0, 0.0, 1.0))
@@ -298,17 +300,12 @@ def diarise(
         from sklearn.cluster import KMeans
 
         n_speakers, cluster_confidence = _estimate_n_speakers(
-            embeddings, cfg.min_speakers, cfg.max_speakers, cfg.random_state
+            embeddings, cfg.min_speakers, cfg.max_speakers, cfg.random_state,
+            silhouette_threshold=nb_threshold,
         )
-        # DIAR-04: for narrowband apply relaxed threshold — keep split if confidence
-        # is above the narrowband floor rather than the standard 0.10 floor.
-        if n_speakers <= 1 and cluster_confidence < nb_threshold:
-            # confidence too low even for narrowband → collapse to single speaker
+        if n_speakers <= 1:
             labels = np.zeros(embeddings.shape[0], dtype=int)
             cluster_confidence = 0.5
-        elif n_speakers <= 1:
-            labels = np.zeros(embeddings.shape[0], dtype=int)
-            cluster_confidence = 0.5  # single-speaker is low-confidence diarisation
         else:
             km = KMeans(
                 n_clusters=n_speakers,
@@ -355,9 +352,8 @@ def diarise_from_speaker_vad(
         (turns, speaker_map) where
         speaker_map = {"SPEAKER_00": "Host", "SPEAKER_01": "Guest"}
     """
-    from typing import Dict as _Dict
     turns: List[SpeakerTurn] = []
-    speaker_map: _Dict[str, str] = {}
+    speaker_map: Dict[str, str] = {}
 
     for i, (human_label, segments) in enumerate(speaker_vad.items()):
         pipeline_label = f"{label_prefix}{i:02d}"

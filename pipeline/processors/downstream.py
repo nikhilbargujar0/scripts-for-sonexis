@@ -10,7 +10,7 @@ import numpy as np
 
 from ..audio_loader import LoadedAudio
 from ..code_switch import enrich_code_switch_segments
-from ..config import PipelineConfig
+from ..config import PipelineConfig, _detect_device
 from ..confidence import annotate_segments_with_confidence
 from ..interaction_metadata import OverlapSegment
 from ..language_detection import FastTextLID, detect_language, detect_language_per_speaker
@@ -50,10 +50,15 @@ def compute_total_speech_duration(speech_segments) -> float:
 
 def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
     model_path = whisper_local_path(model_dir, cfg.model_size) if model_dir else None
+    device = cfg.device if cfg.device != "auto" else _detect_device()
+    # int8 is CPU-only quantisation; CUDA needs float16 (or float32).
+    compute_type = cfg.compute_type
+    if device == "cuda" and compute_type == "int8":
+        compute_type = "float16"
     return ASRConfig(
         model_size=cfg.model_size,
-        compute_type=cfg.compute_type,
-        device=cfg.device if cfg.device != "auto" else "cpu",
+        compute_type=compute_type,
+        device=device,
         language=cfg.language,
         offline_mode=cfg.offline_mode,
         model_path=model_path,
