@@ -8,7 +8,8 @@ def classify_segment(segment: Dict) -> Dict:
     tier = str(segment.get("confidence_band") or "bronze")
     reasons: List[str] = list(segment.get("confidence_reasons") or [])
     if segment.get("overlap"):
-        tier = "silver" if tier == "gold" else "bronze"
+        if tier == "gold":
+            tier = "silver"
         reasons.append("overlap")
     if segment.get("snr_band") == "low":
         tier = "bronze"

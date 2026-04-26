@@ -65,8 +65,10 @@ def estimate_offset(
     a = a[:n]
     b = b[:n]
     max_lag = max(1, min(int(round(max_lag_s * sample_rate / hop)), n - 1))
-    corr = np.correlate(b, a, mode="full")
-    center = len(a) - 1
+    nfft = 1 << (2 * n - 1).bit_length()
+    corr_full = np.fft.irfft(np.fft.rfft(b, n=nfft) * np.conj(np.fft.rfft(a, n=nfft)), n=nfft)
+    corr = np.concatenate([corr_full[-(n - 1):], corr_full[:n]])
+    center = n - 1
     window = corr[center - max_lag:center + max_lag + 1]
     if window.size == 0:
         result = AlignmentResult(0, 0.0, 0, False)
