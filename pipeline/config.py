@@ -38,7 +38,8 @@ def _detect_device() -> str:
 @dataclass
 class PipelineConfig:
     # ── input ─────────────────────────────────────────────────────────
-    input_type: str = "auto"          # auto | speaker_pair | stereo | mono
+    input_type: str = "auto"          # auto | speaker_folders | speaker_pair | stereo | mono
+    allow_missing_metadata: bool = False
 
     # ── output ────────────────────────────────────────────────────────
     output_mode: str = "both"         # both | speaker_separated | mono

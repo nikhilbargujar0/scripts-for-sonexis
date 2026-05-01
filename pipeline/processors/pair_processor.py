@@ -32,7 +32,7 @@ from ..quality_checker import check_speaker_pair
 from ..roman_indic_classifier import RomanIndicClassifier
 from ..steps.alignment import AlignmentError, align_pair
 from ..steps.audio_processing import mix_mono_with_metadata
-from ..transcription import Transcriber
+from ..transcription import Transcriber, Transcript
 from ..utils.premium_routing import normalize_recording_condition
 from ..validation import build_validation_report
 from ..vad import VADConfig, detect_speech
@@ -82,6 +82,24 @@ def _build_alignment_report(
     cfg: PipelineConfig,
 ) -> Tuple[Dict[str, np.ndarray], Dict]:
     labels = list(pair.speakers)
+    if pair.recording_type == "studio_speaker_folders":
+        durations = {
+            label: round(float(audio.duration), 3)
+            for label, audio in pair.speakers.items()
+        }
+        values = list(durations.values())
+        mismatch = (max(values) - min(values)) if len(values) >= 2 else 0.0
+        return speaker_wavs, {
+            "method": "shared_studio_timeline",
+            "offset_ms": 0,
+            "confidence": 1.0,
+            "passed": True,
+            "applied": False,
+            "note": "speaker folders provide ground-truth identity; no diarisation or waveform shift was run",
+            "speaker_durations_s": durations,
+            "duration_mismatch_s": round(float(mismatch), 3),
+            "max_duration_mismatch_s": float(cfg.max_duration_mismatch_s),
+        }
     if pair.recording_type == "stereo":
         return speaker_wavs, {
             "method": "shared_stereo_timeline",
@@ -186,6 +204,34 @@ def _dataset_products(cfg: PipelineConfig) -> List[str]:
     return out
 
 
+def _merge_speaker_transcripts(
+    speaker_transcripts: Dict[str, Transcript],
+    speaker_map: Dict[str, str],
+) -> Transcript:
+    segments = []
+    language_scores: Dict[str, float] = {}
+    for pipeline_label, human_label in speaker_map.items():
+        transcript = speaker_transcripts.get(human_label)
+        if transcript is None:
+            continue
+        language_scores[transcript.language] = max(
+            language_scores.get(transcript.language, 0.0),
+            float(transcript.language_probability or 0.0),
+        )
+        for seg in transcript.segments:
+            setattr(seg, "ground_truth_speaker", pipeline_label)
+            segments.append(seg)
+    segments.sort(key=lambda s: (float(s.start), float(s.end)))
+    primary_language = max(language_scores, key=language_scores.get) if language_scores else "unknown"
+    duration = max((float(seg.end) for seg in segments), default=0.0)
+    return Transcript(
+        language=primary_language,
+        language_probability=float(language_scores.get(primary_language, 0.0)),
+        duration=duration,
+        segments=segments,
+    )
+
+
 def process_speaker_pair(
     pair: SpeakerPairAudio,
     transcriber: Transcriber,
@@ -234,7 +280,13 @@ def process_speaker_pair(
     consensus_result = None
     alignment_result = None
     selected_candidate = None
-    if pipeline_mode == "premium_accuracy":
+    per_speaker_transcripts: Dict[str, Transcript] = {}
+    if pair.recording_type == "studio_speaker_folders":
+        transcriber.cfg = asr_cfg
+        for human_label, wav in speaker_wavs.items():
+            per_speaker_transcripts[human_label] = transcriber.transcribe(wav, pair.mixed.sample_rate)
+        transcript_override = _merge_speaker_transcripts(per_speaker_transcripts, speaker_map)
+    elif pipeline_mode == "premium_accuracy":
         router = PremiumASRRouter(
             cfg=cfg,
             whisper_adapter=WhisperLocalAdapter(
@@ -300,6 +352,35 @@ def process_speaker_pair(
         language_report=lang_report.to_dict(),
         candidate=selected_candidate,
     )
+    metadata = dict(getattr(pair, "conversation_metadata", {}) or {})
+    if metadata:
+        primary = {
+            "conversation_id": metadata.get("conversation_id") or pair.session_name,
+            "scenario_id": metadata.get("scenario_id"),
+            "scenario_name": metadata.get("scenario_name"),
+            "topic": metadata.get("topic"),
+            "sub_topic": metadata.get("sub_topic"),
+            "conversation_style": metadata.get("conversation_style"),
+            "scripted": metadata.get("scripted"),
+            "language_mix": metadata.get("language_mix"),
+            "speaker_roles": metadata.get("speaker_roles") or metadata.get("speaker roles"),
+            "speaker_profiles": metadata.get("speaker_profiles") or metadata.get("speaker profile metadata"),
+            "recording_setup": metadata.get("recording_setup") or metadata.get("recording setup"),
+            "consent_status": metadata.get("consent_status") or metadata.get("consent status"),
+        }
+        conv_meta["provided_metadata"] = {
+            **dict(conv_meta.get("provided_metadata") or {}),
+            **{k: v for k, v in primary.items() if v is not None},
+        }
+        for key in ("topic", "sub_topic", "scenario_id", "scenario_name", "conversation_style", "scripted", "language_mix"):
+            if primary.get(key) is not None:
+                conv_meta[key] = {"value": primary[key], "source": "metadata_json", "confidence": 1.0}
+        if primary.get("recording_setup") is not None:
+            audio_meta["recording_setup"] = {
+                "value": primary["recording_setup"],
+                "source": "metadata_json",
+                "confidence": 1.0,
+            }
     quality_targets = build_quality_targets(cfg)
     quality_metrics = build_quality_metrics()
     human_review = build_human_review(
@@ -351,7 +432,14 @@ def process_speaker_pair(
     else:
         source_paths = [a.path for a in pair.speakers.values() if os.path.isfile(a.path)]
 
-    input_mode = "stereo" if pair.recording_type == "stereo" else "speaker_pair"
+    if pair.recording_type == "stereo":
+        input_mode = "stereo"
+    elif pair.recording_type == "studio_speaker_folders":
+        input_mode = "speaker_folders"
+    else:
+        input_mode = "speaker_pair"
+    requested_diarisation = "none" if input_mode == "speaker_folders" else "speaker_vad"
+    effective_diarisation = "none" if input_mode == "speaker_folders" else "speaker_vad"
     record = build_record(
         audio_path=pair.mixed.path,
         transcript=transcript,
@@ -368,8 +456,8 @@ def process_speaker_pair(
         validation=build_validation_report(
             quality_report=qreport,
             transcript=transcript,
-            requested_diarisation_backend="speaker_vad",
-            effective_diarisation_backend="speaker_vad",
+            requested_diarisation_backend=requested_diarisation,
+            effective_diarisation_backend=effective_diarisation,
             speech_segments=mixed_speech,
             turns=dia,
             input_alignment=alignment,
@@ -402,6 +490,41 @@ def process_speaker_pair(
     record["tts_suitability"] = tts_suitability
     record["dataset_products"] = _dataset_products(cfg)
     record["premium_processing"] = premium_processing
+    if input_mode == "speaker_folders":
+        record["metadata_json"] = metadata
+        record["inferred_metadata"] = {
+            "conversation": {
+                k: v for k, v in conv_meta.items()
+                if isinstance(v, dict) and v.get("source") != "metadata_json" and "confidence" in v
+            },
+            "speakers": {
+                spk: {
+                    k: v for k, v in meta.items()
+                    if isinstance(v, dict) and v.get("source") != "metadata_json" and "confidence" in v
+                }
+                for spk, meta in speaker_meta.items()
+            },
+        }
+        record["validation"]["checks"]["speaker_folder_structure"] = pair.validation_context.get("structure", {})
+        record["validation"]["checks"]["source_audio_format"] = pair.validation_context.get("audio_format", {})
+        for warning in pair.validation_context.get("warnings", []):
+            record["validation"]["issues"].append({
+                "severity": "warning",
+                "code": "source_audio_format_warning",
+                "message": warning,
+                "confidence": 1.0,
+                "details": {},
+            })
+        record["validation"]["issue_count"] = len(record["validation"].get("issues", []))
+        record["validation"]["passed"] = not any(
+            issue.get("severity") == "error" for issue in record["validation"].get("issues", [])
+        )
+        record["processing"]["diarisation"] = {
+            "requested_backend": "none",
+            "effective_backend": "none",
+            "fallback_available_for_input_type": "mono",
+            "note": "speaker folders are ground-truth speaker identity; diarisation was not run",
+        }
     if transcript_candidates and bool(getattr(cfg, "store_transcript_candidates", True)):
         record["transcript_candidates"] = [
             candidate.to_dict(
@@ -437,6 +560,7 @@ def process_speaker_pair(
         speaker_map=speaker_map,
         monologues=monologues,
         source_paths=source_paths,
+        original_sources=pair.speakers if input_mode == "speaker_folders" else None,
         speaker_lang={k: v.to_dict() for k, v in speaker_lang.items()},
     )
     return record

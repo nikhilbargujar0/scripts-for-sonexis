@@ -208,10 +208,11 @@ class DatasetWriter:
         paths: Dict[str, str] = {}
         if self.output_mode not in ("both", "speaker_separated"):
             return paths
-        out_dir = self.audio_root / "speaker_separated" / session_name
+        out_dir = self.audio_root / "model_ready_16k" / session_name
         for spk_id, wav in speaker_wavs.items():
             label = (speaker_map or {}).get(spk_id, spk_id)
-            fname = f"{label.lower().replace(' ', '_')}.wav"
+            suffix = "spk1" if label == "speaker_1" else ("spk2" if label == "speaker_2" else label.lower().replace(" ", "_"))
+            fname = f"{session_name}_{suffix}_16k.wav"
             p = out_dir / fname
             _write_wav(p, wav, sample_rate)
             paths[spk_id] = str(p.resolve())
@@ -228,8 +229,8 @@ class DatasetWriter:
         """Write mixed mono WAV. Returns abs path or None if skipped."""
         if self.output_mode not in ("both", "mono"):
             return None
-        out_dir = self.audio_root / "mono" / session_name
-        p = out_dir / f"{suffix}.wav"
+        out_dir = self.audio_root / "model_ready_16k" / session_name
+        p = out_dir / f"{session_name}_mono_16k.wav"
         _write_wav(p, wav, sample_rate)
         self._log.info("Wrote mono WAV: %s", p)
         return str(p.resolve())
@@ -260,7 +261,8 @@ class DatasetWriter:
                 paths[spk_id] = None
                 continue
             label = (speaker_map or {}).get(spk_id, spk_id)
-            fname = f"{label.lower().replace(' ', '_')}_monologue.wav"
+            suffix = "spk1" if label == "speaker_1" else ("spk2" if label == "speaker_2" else label.lower().replace(" ", "_"))
+            fname = f"{session_name}_{suffix}_monologue.wav"
             p = out_dir / fname
             _write_wav(p, clip, sample_rate)
             paths[spk_id] = str(p.resolve())
@@ -276,6 +278,35 @@ class DatasetWriter:
                 dst = out_dir / Path(src).name
                 if not dst.exists():
                     shutil.copy2(src, dst)
+
+    def write_original_48k(
+        self,
+        session_name: str,
+        original_sources: Dict[str, Any],
+        speaker_map: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """Preserve source speaker audio under the canonical original_48k layout."""
+        written: Dict[str, str] = {}
+        out_dir = self.audio_root / "original_48k" / session_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for spk_id, audio in original_sources.items():
+            label = (speaker_map or {}).get(spk_id, spk_id)
+            suffix = "spk1" if label == "speaker_1" else ("spk2" if label == "speaker_2" else label.lower().replace(" ", "_"))
+            dst = out_dir / f"{session_name}_{suffix}_48k.wav"
+            src = getattr(audio, "path", "")
+            if os.path.isfile(src) and Path(src).suffix.lower() == ".wav":
+                if not dst.exists():
+                    shutil.copy2(src, dst)
+            else:
+                if os.path.isfile(src) and _HAS_SF:
+                    data, sr = sf.read(src, dtype="float32", always_2d=False)
+                    if getattr(data, "ndim", 1) == 2:
+                        data = data.mean(axis=1)
+                    _write_wav(dst, data, int(sr))
+                else:
+                    _write_wav(dst, getattr(audio, "waveform"), int(getattr(audio, "sample_rate", 48_000)))
+            written[spk_id] = str(dst.resolve())
+        return written
 
     # ── transcript writing ─────────────────────────────────────────────────
 
@@ -297,6 +328,7 @@ class DatasetWriter:
 
         # combined conversation JSON
         _write_json(out_dir / "combined_conversation.json", conversation_transcript)
+        _write_json(self.transcripts_root / f"{session_name}.json", conversation_transcript)
 
         # per-speaker
         if speaker_transcripts:
@@ -329,6 +361,7 @@ class DatasetWriter:
     ) -> None:
         """Append one line per turn to utterances.jsonl."""
         manifest = self.manifests_root / "utterances.jsonl"
+        speaker_manifest = self.manifests_root / "speaker_separated.jsonl"
 
         for turn in turns:
             label = (speaker_map or {}).get(turn.speaker, turn.speaker)
@@ -373,10 +406,12 @@ class DatasetWriter:
                 ),
             }
             _append_jsonl(manifest, row)
+            _append_jsonl(speaker_manifest, row)
 
     def append_conversations_manifest(self, record: Dict) -> None:
         """Append one line per session to conversations.jsonl."""
         manifest = self.manifests_root / "conversations.jsonl"
+        mono_manifest = self.manifests_root / "mono_conversation.jsonl"
         conv_meta = record.get("metadata", {}).get("conversation", {})
         interaction = record.get("metadata", {}).get("interaction", {})
         lang = record.get("metadata", {}).get("language", {})
@@ -409,6 +444,7 @@ class DatasetWriter:
             ),
         }
         _append_jsonl(manifest, row)
+        _append_jsonl(mono_manifest, row)
 
     def append_speakers_manifest(
         self,
@@ -420,6 +456,7 @@ class DatasetWriter:
     ) -> None:
         """Append one line per speaker×session to speakers.jsonl."""
         manifest = self.manifests_root / "speakers.jsonl"
+        monologues_manifest = self.manifests_root / "monologues.jsonl"
         for spk_id, meta in speaker_meta.items():
             label = (speaker_map or {}).get(spk_id, spk_id)
             lang_info = (speaker_lang or {}).get(spk_id, {})
@@ -444,6 +481,8 @@ class DatasetWriter:
                 "monologue_path": (monologue_paths or {}).get(spk_id),
             }
             _append_jsonl(manifest, row)
+            if row.get("monologue_path"):
+                _append_jsonl(monologues_manifest, row)
 
     # ── high-level session write ───────────────────────────────────────────
 
@@ -459,6 +498,7 @@ class DatasetWriter:
         speaker_map: Optional[Dict[str, str]] = None,
         monologues: Optional[Dict[str, Optional[Monologue]]] = None,
         source_paths: Optional[List[str]] = None,
+        original_sources: Optional[Dict[str, Any]] = None,
         speaker_lang: Optional[Dict[str, Dict]] = None,
     ) -> Dict[str, str]:
         """Write all outputs for one session.
@@ -470,6 +510,10 @@ class DatasetWriter:
         # 1. Copy raws
         if source_paths:
             self.copy_raw(source_paths, session_name)
+
+        if original_sources:
+            original_paths = self.write_original_48k(session_name, original_sources, speaker_map)
+            written.update({f"original_48k_{k}": v for k, v in original_paths.items()})
 
         # 2. Speaker WAVs
         speaker_wav_paths: Dict[str, str] = {}

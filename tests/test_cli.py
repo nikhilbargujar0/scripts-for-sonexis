@@ -51,6 +51,38 @@ class CliTests(unittest.TestCase):
             self.assertFalse(cfg.offline_mode)
             self.assertEqual(cfg.output_format, "jsonl")
 
+    def test_studio_cli_flags_reach_pipeline_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "out"
+            result = {
+                "output_path": str(output),
+                "records": [],
+                "validation_reports": [],
+                "downloads": {},
+            }
+            with patch.object(cli, "process_conversation", return_value=result) as mocked:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    exit_code = cli.main(
+                        [
+                            "--input",
+                            str(Path(tmp) / "conversation_0001"),
+                            "--output",
+                            str(output),
+                            "--input_type",
+                            "speaker_folders",
+                            "--model_path",
+                            str(Path(tmp) / "models" / "whisper"),
+                            "--allow_missing_metadata",
+                            "true",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            cfg = mocked.call_args.args[2]
+            self.assertEqual(cfg.input_type, "speaker_folders")
+            self.assertTrue(cfg.allow_missing_metadata)
+            self.assertEqual(cfg.model_dir, str(Path(tmp) / "models" / "whisper"))
+
     def test_premium_config_must_be_object(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "premium.json"

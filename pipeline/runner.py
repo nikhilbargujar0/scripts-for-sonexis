@@ -22,10 +22,12 @@ from .processors.mono_processor import process_single
 from .processors.pair_processor import process_speaker_pair
 from .steps.audio_processing import (
     detect_and_group_pairs,
+    detect_studio_conversation_folders,
     detect_stereo_files,
     iter_audio_files,
     load_audio,
     load_speaker_pair,
+    load_studio_speaker_folders,
     load_stereo_as_pair,
 )
 from .steps.validation import validate_record_against_schema, write_validation_report
@@ -53,6 +55,23 @@ def _resolve_input(input_path: str, cfg: PipelineConfig):
     pairs: List = []
     if input_type in ("separate", "speaker_pair"):
         input_type = "speaker_pair"
+
+    if input_type == "speaker_folders":
+        work_items = detect_studio_conversation_folders(
+            input_path,
+            allow_missing_metadata=bool(getattr(cfg, "allow_missing_metadata", False)),
+        )
+        if not work_items:
+            raise ProcessingError("speaker_folders input selected, but no valid conversation folder found")
+        return input_type, work_items
+
+    if input_type == "auto":
+        studio_items = detect_studio_conversation_folders(
+            input_path,
+            allow_missing_metadata=bool(getattr(cfg, "allow_missing_metadata", False)),
+        )
+        if studio_items:
+            return "speaker_folders", studio_items
 
     if input_type in ("speaker_pair", "auto"):
         pairs = detect_and_group_pairs(input_path)
@@ -149,6 +168,20 @@ def process_conversation(
                     if pair is None:
                         raise ProcessingError(f"cannot load speaker pair: {session_name}")
                     record = process_speaker_pair(pair, **shared)
+                elif input_type == "speaker_folders":
+                    session_name, p1, l1, p2, l2, metadata, validation_context = item
+                    pair = load_studio_speaker_folders(
+                        p1,
+                        l1,
+                        p2,
+                        l2,
+                        session_name=session_name,
+                        metadata=metadata,
+                        validation_context=validation_context,
+                    )
+                    if pair is None:
+                        raise ProcessingError(f"cannot load studio speaker folder: {session_name}")
+                    record = process_speaker_pair(pair, **shared)
                 else:
                     clip = load_audio(item)
                     if clip is None:
@@ -176,7 +209,7 @@ def process_conversation(
         root_logger.setLevel(previous_level)
 
     downloads = {"dataset_zip": _zip_directory(output_path, os.path.join(output_path, "dataset.zip"))}
-    for name in ("transcripts", "annotations", "audio", "manifests", "logs"):
+    for name in ("transcripts", "annotations", "audio", "manifests", "validation", "logs"):
         path = Path(output_path) / name
         if path.exists():
             downloads[f"{name}_zip"] = _zip_directory(output_path, os.path.join(output_path, f"{name}.zip"), subdir=name)

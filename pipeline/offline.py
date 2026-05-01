@@ -52,6 +52,10 @@ def default_model_dir() -> str:
 
 
 def whisper_local_path(model_dir: str, model_size: str) -> str:
+    if os.path.basename(os.path.normpath(model_dir)) == model_size:
+        return model_dir
+    if os.path.basename(os.path.normpath(model_dir)) == "whisper":
+        return os.path.join(model_dir, model_size)
     return os.path.join(model_dir, "whisper", model_size)
 
 

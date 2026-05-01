@@ -9,7 +9,7 @@ from ..validation import build_validation_report
 
 
 def write_validation_report(report: Dict, output_dir: str, session_name: str = "session") -> str:
-    path = Path(output_dir) / "logs" / f"{session_name}.validation_report.json"
+    path = Path(output_dir) / "validation" / f"{session_name}_validation.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return str(path)

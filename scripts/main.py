@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input", required=True, help="conversation folder or audio file")
     p.add_argument("--output", required=True, help="dataset output directory")
     p.add_argument("--input_type", "--input-type", default="auto",
-                   choices=["auto", "separate", "speaker_pair", "stereo", "mono"])
+                   choices=["auto", "separate", "speaker_pair", "speaker_folders", "stereo", "mono"])
     p.add_argument("--output_mode", "--output-mode", default="both",
                    choices=["speaker_separated", "mono", "both"])
     p.add_argument("--output_format", "--output-format", default="json",
@@ -55,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "Individual flags still override these defaults.")
     p.add_argument("--offline_mode", "--offline-mode", default=None,
                    help="default: true normally, false when --colab is set")
-    p.add_argument("--model_dir", "--model-dir", default=None)
+    p.add_argument("--model_dir", "--model-dir", "--model_path", "--model-path", default=None)
+    p.add_argument("--allow_missing_metadata", "--allow-missing-metadata", type=_bool, default=False)
     p.add_argument("--model_size", "--model-size", default="small")
     p.add_argument("--compute_type", "--compute-type", default=None,
                    help="default: int8 (cpu) or float16 (cuda). "
@@ -123,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = PipelineConfig(
         input_type=input_type,
+        allow_missing_metadata=args.allow_missing_metadata,
         output_mode=args.output_mode,
         output_format=args.output_format,
         offline_mode=offline_mode,

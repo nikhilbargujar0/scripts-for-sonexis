@@ -191,8 +191,9 @@ def _build_conversation_transcript(
     for seg in transcript.segments:
         if not seg.text.strip():
             continue
+        forced_speaker = getattr(seg, "ground_truth_speaker", None)
         mid = (seg.start + seg.end) / 2.0
-        spk = find_speaker(mid)
+        spk = forced_speaker or find_speaker(mid)
         result.append({
             "speaker": spk,
             "label": sm.get(spk, spk),
@@ -436,6 +437,9 @@ def build_record(
     sorted_turns = sorted(turns, key=lambda t: t.start)
 
     def find_speaker(seg) -> str:
+        forced_speaker = getattr(seg, "ground_truth_speaker", None)
+        if forced_speaker:
+            return forced_speaker
         mid = (seg.start + seg.end) / 2.0
         for turn in sorted_turns:
             if turn.start <= mid <= turn.end:

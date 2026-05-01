@@ -55,6 +55,7 @@ except ImportError as exc:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 SUPPORTED_EXTS = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
+STUDIO_EXTS = {".wav", ".flac"}
 TARGET_SR = 16_000  # faster-whisper, webrtcvad and pyannote all expect 16 kHz
 STEREO_STEMS = {"stereo", "conversation_stereo", "dual_channel", "two_channel"}
 
@@ -95,6 +96,8 @@ class SpeakerPairAudio:
     speaker_map: Dict[str, str] = field(default_factory=dict)
     # speaker_map: {pipeline_label: human_label} e.g. {"SPEAKER_00": "Host"}
     recording_type: str = "separate"        # separate | stereo
+    conversation_metadata: Dict = field(default_factory=dict)
+    validation_context: Dict = field(default_factory=dict)
 
     @property
     def filename(self) -> str:
@@ -286,6 +289,26 @@ def load_speaker_pair(
     )
 
 
+def load_studio_speaker_folders(
+    path1: str,
+    label1: str,
+    path2: str,
+    label2: str,
+    *,
+    session_name: str,
+    metadata: Optional[Dict] = None,
+    validation_context: Optional[Dict] = None,
+    target_sr: int = TARGET_SR,
+) -> Optional[SpeakerPairAudio]:
+    pair = load_speaker_pair(path1, label1, path2, label2, session_name=session_name, target_sr=target_sr)
+    if pair is None:
+        return None
+    pair.recording_type = "studio_speaker_folders"
+    pair.conversation_metadata = dict(metadata or {})
+    pair.validation_context = dict(validation_context or {})
+    return pair
+
+
 def load_stereo_as_pair(
     path: str,
     label_left: str = "Speaker_L",
@@ -390,6 +413,121 @@ def _audio_files_in_dir(dirpath: str) -> List[str]:
             full = os.path.abspath(os.path.join(dirpath, name))
             if os.path.isfile(full):
                 out.append(full)
+    return out
+
+
+def _studio_audio_file(dirpath: str, speaker_label: str) -> str:
+    files = _audio_files_in_dir(dirpath)
+    if not files:
+        raise ValueError(f"missing audio file in {speaker_label}")
+    preferred = [
+        p for p in files
+        if os.path.splitext(p)[1].lower() in STUDIO_EXTS
+    ]
+    if not preferred:
+        raise ValueError(f"{speaker_label} must contain WAV or FLAC audio")
+    if len(preferred) > 1:
+        exact = [p for p in preferred if _stem(p).lower() == speaker_label.lower()]
+        if len(exact) == 1:
+            return exact[0]
+        raise ValueError(f"{speaker_label} must contain exactly one WAV/FLAC audio file")
+    return preferred[0]
+
+
+def validate_studio_conversation_folder(
+    conversation_dir: str,
+    *,
+    allow_missing_metadata: bool = False,
+) -> Tuple[str, str, str, str, str, Dict, Dict]:
+    """Validate the canonical Sonexis studio folder and return pair info.
+
+    Returns:
+        (conversation_id, spk1_path, "speaker_1", spk2_path, "speaker_2",
+         metadata, validation_context)
+    """
+    root = os.path.abspath(conversation_dir)
+    if not os.path.isdir(root):
+        raise ValueError(f"speaker_folders input must be a conversation directory: {root}")
+    conversation_id = os.path.basename(root)
+    metadata_path = os.path.join(root, "metadata.json")
+    metadata: Dict = {}
+    if not os.path.isfile(metadata_path):
+        if not allow_missing_metadata:
+            raise ValueError("metadata.json is required for speaker_folders input")
+    else:
+        import json
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        if not isinstance(metadata, dict):
+            raise ValueError("metadata.json must contain a JSON object")
+        if metadata.get("conversation_id") and str(metadata["conversation_id"]) != conversation_id:
+            raise ValueError(
+                f"metadata conversation_id {metadata['conversation_id']!r} does not match folder {conversation_id!r}"
+            )
+        for key in ("scenario_id", "scenario_name", "topic", "sub_topic", "conversation_style", "language_mix"):
+            if key not in metadata:
+                raise ValueError(f"metadata.json missing required field: {key}")
+        if metadata.get("scripted") is not False:
+            raise ValueError("metadata.json must set scripted: false for unscripted studio conversations")
+
+    spk1_dir = os.path.join(root, "speaker_1")
+    spk2_dir = os.path.join(root, "speaker_2")
+    if not os.path.isdir(spk1_dir) or not os.path.isdir(spk2_dir):
+        raise ValueError("speaker_folders input requires speaker_1/ and speaker_2/ subfolders")
+    p1 = _studio_audio_file(spk1_dir, "speaker_1")
+    p2 = _studio_audio_file(spk2_dir, "speaker_2")
+
+    audio_checks: Dict[str, Dict] = {}
+    warnings: List[str] = []
+    for label, path in (("speaker_1", p1), ("speaker_2", p2)):
+        ext = os.path.splitext(path)[1].lower()
+        probe = _audio_probe(path)
+        sr = int(probe.get("source_sample_rate") or 0)
+        bit_depth = probe.get("sample_width_bits")
+        check = {
+            "path": path,
+            "format": ext.lstrip("."),
+            "source_sample_rate_hz": sr or None,
+            "bit_depth": bit_depth,
+            "channels": probe.get("channels"),
+            "encoding": probe.get("encoding"),
+            "format_ok": ext in STUDIO_EXTS,
+            "sample_rate_preferred": sr == 48_000,
+            "bit_depth_ok": bool(bit_depth is None or int(bit_depth) >= 16),
+        }
+        audio_checks[label] = check
+        if ext == ".flac":
+            warnings.append(f"{label}: FLAC input accepted; WAV is preferred")
+        if sr and sr != 48_000:
+            warnings.append(f"{label}: source sample rate {sr} Hz, 48000 Hz preferred")
+        if bit_depth is not None and int(bit_depth) < 16:
+            raise ValueError(f"{label}: bit depth {bit_depth} is below required 16-bit")
+    validation_context = {
+        "metadata_path": metadata_path if os.path.isfile(metadata_path) else None,
+        "structure": {
+            "conversation_dir": root,
+            "speaker_1_dir": spk1_dir,
+            "speaker_2_dir": spk2_dir,
+        },
+        "audio_format": audio_checks,
+        "warnings": warnings,
+    }
+    return conversation_id, p1, "speaker_1", p2, "speaker_2", metadata, validation_context
+
+
+def detect_studio_conversation_folders(root: str, *, allow_missing_metadata: bool = False) -> List[Tuple[str, str, str, str, str, Dict, Dict]]:
+    root = os.path.abspath(root)
+    if os.path.isdir(os.path.join(root, "speaker_1")) or os.path.isdir(os.path.join(root, "speaker_2")):
+        return [validate_studio_conversation_folder(root, allow_missing_metadata=allow_missing_metadata)]
+    out: List[Tuple[str, str, str, str, str, Dict, Dict]] = []
+    if not os.path.isdir(root):
+        return out
+    for name in sorted(os.listdir(root)):
+        if not name.startswith("conversation_"):
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            out.append(validate_studio_conversation_folder(path, allow_missing_metadata=allow_missing_metadata))
     return out
 
 
