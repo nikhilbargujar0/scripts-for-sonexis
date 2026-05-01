@@ -32,7 +32,7 @@ def _issue(
     }
 
 
-def _transcript_quality(transcript: Optional[Transcript]) -> Dict:
+def _transcript_quality(transcript: Optional[Transcript], quality_score_threshold: float = 0.35) -> Dict:
     if transcript is None:
         return {
             "segment_count": 0,
@@ -50,7 +50,7 @@ def _transcript_quality(transcript: Optional[Transcript]) -> Dict:
         "word_count": int(word_count),
         "mean_quality_score": round(float(np.mean(scores)), 4) if scores else 0.0,
         "low_quality_segment_ratio": round(
-            float(sum(1 for s in scores if s < 0.35) / len(scores)), 4
+            float(sum(1 for s in scores if s < quality_score_threshold) / len(scores)), 4
         ) if scores else 1.0,
         "empty_transcript": len(scored) == 0,
     }
@@ -70,6 +70,7 @@ def build_validation_report(
     expected_overlap_duration_s: float = 0.0,
     session_duration_s: float = 0.0,
     alignment_required: bool = False,
+    quality_score_threshold: float = 0.35,
 ) -> Dict:
     """Build a JSON-safe validation block for one session."""
     issues: List[Dict] = []
@@ -83,17 +84,18 @@ def build_validation_report(
         for msg in quality_report.warnings:
             issues.append(_issue("warning", "audio_quality_warning", msg))
 
-    tq = _transcript_quality(transcript)
+    tq = _transcript_quality(transcript, quality_score_threshold)
     checks["transcript_quality"] = tq
     if tq["empty_transcript"]:
         issues.append(_issue(
             "error", "empty_transcript",
             "ASR produced no non-empty transcript segments.",
         ))
-    elif tq["low_quality_segment_ratio"] > 0.35:
+    elif tq["low_quality_segment_ratio"] > quality_score_threshold:
+        pct = int(quality_score_threshold * 100)
         issues.append(_issue(
             "warning", "low_transcript_quality",
-            "More than 35% of transcript segments have quality_score < 0.35.",
+            f"More than {pct}% of transcript segments have quality_score < {quality_score_threshold}.",
             confidence=0.8,
             details={"low_quality_segment_ratio": tq["low_quality_segment_ratio"]},
         ))

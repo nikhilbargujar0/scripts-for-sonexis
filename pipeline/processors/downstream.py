@@ -10,7 +10,7 @@ import numpy as np
 
 from ..audio_loader import LoadedAudio
 from ..code_switch import enrich_code_switch_segments
-from ..config import PipelineConfig
+from ..config import PipelineConfig, _detect_device
 from ..confidence import annotate_segments_with_confidence
 from ..interaction_metadata import OverlapSegment
 from ..language_detection import FastTextLID, detect_language, detect_language_per_speaker
@@ -48,12 +48,49 @@ def compute_total_speech_duration(speech_segments) -> float:
     return float(sum(float(end) - float(start) for start, end in speech_segments))
 
 
+_LANG_PROMPTS: Dict[str, str] = {
+    "hi": (
+        "यह हिंदी और अंग्रेजी मिश्रित (Hinglish) बातचीत है। "
+        "वक्ता हिंदी और अंग्रेजी दोनों में बोलते हैं। "
+        "This is a Hinglish conversation mixing Hindi and English."
+    ),
+    "ta": "இது தமிழ் மற்றும் ஆங்கிலம் கலந்த உரையாடல்.",
+    "te": "ఇది తెలుగు మరియు ఇంగ్లీష్ మిశ్రిత సంభాషణ.",
+    "mr": "हे मराठी आणि इंग्रजी मिश्रित संभाषण आहे.",
+    "bn": "এটি বাংলা এবং ইংরেজি মিশ্রিত কথোপকথন।",
+    "gu": "આ ગુજરાતી અને અંગ્રેજી મિશ્રિત વાર્તાલાપ છે.",
+    "pa": "ਇਹ ਪੰਜਾਬੀ ਅਤੇ ਅੰਗਰੇਜ਼ੀ ਮਿਸ਼ਰਤ ਗੱਲਬਾਤ ਹੈ।",
+}
+
+
+_GENERIC_MULTILINGUAL_PROMPT = (
+    "This conversation may include Hindi, English, or other Indian languages. "
+    "यह बातचीत हिंदी, अंग्रेजी या अन्य भारतीय भाषाओं में हो सकती है।"
+)
+
+
+def _resolve_initial_prompt(cfg: PipelineConfig) -> Optional[str]:
+    if getattr(cfg, "initial_prompt", None):
+        return cfg.initial_prompt
+    lang = (cfg.language or "").lower().split("-")[0]
+    if lang:
+        return _LANG_PROMPTS.get(lang)
+    # language=None (auto-detect): inject generic multilingual prompt so
+    # Whisper doesn't default to English-only decoding on mixed-script audio.
+    return _GENERIC_MULTILINGUAL_PROMPT
+
+
 def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
     model_path = whisper_local_path(model_dir, cfg.model_size) if model_dir else None
+    device = cfg.device if cfg.device != "auto" else _detect_device()
+    # int8 is CPU-only quantisation; CUDA needs float16 (or float32).
+    compute_type = cfg.compute_type
+    if device == "cuda" and compute_type == "int8":
+        compute_type = "float16"
     return ASRConfig(
         model_size=cfg.model_size,
-        compute_type=cfg.compute_type,
-        device=cfg.device if cfg.device != "auto" else "cpu",
+        compute_type=compute_type,
+        device=device,
         language=cfg.language,
         offline_mode=cfg.offline_mode,
         model_path=model_path,
@@ -61,6 +98,11 @@ def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
         batched=cfg.asr_batched,
         batch_size=cfg.asr_batch_size,
         cpu_threads=cfg.asr_cpu_threads,
+        initial_prompt=_resolve_initial_prompt(cfg),
+        no_speech_threshold=getattr(cfg, "no_speech_threshold", 0.6),
+        compression_ratio_threshold=getattr(cfg, "compression_ratio_threshold", 2.4),
+        log_prob_threshold=getattr(cfg, "log_prob_threshold", -1.0),
+        condition_on_previous_text=getattr(cfg, "condition_on_previous_text", False),
     )
 
 

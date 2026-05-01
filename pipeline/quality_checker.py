@@ -124,7 +124,7 @@ def check_mono(
     """Quality check for a single mono audio file."""
     wav = audio.waveform.astype(np.float32)
     # Normalise int16 if needed
-    if wav.max() > 1.0:
+    if np.max(np.abs(wav)) > 1.0:
         wav = wav / 32768.0
 
     warnings, errors, cr, sr_ratio = _check_wav(
@@ -161,7 +161,7 @@ def check_speaker_pair(
     for spk_id, audio in pair.speakers.items():
         label = pair.speaker_map.get(spk_id, spk_id)
         wav = audio.waveform.astype(np.float32)
-        if wav.max() > 1.0:
+        if np.max(np.abs(wav)) > 1.0:
             wav = wav / 32768.0
 
         w, e, cr, sr_ratio = _check_wav(wav, audio.sample_rate, label, min_duration_s)

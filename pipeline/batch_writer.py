@@ -211,7 +211,8 @@ class BatchWriter:
         if fmt == "jsonl":
             self._jsonl_path = os.path.join(output_dir, f"{dataset_name}.jsonl")
             # Truncate any stale file at start so reruns don't double-write.
-            open(self._jsonl_path, "w").close()
+            with open(self._jsonl_path, "w"):
+                pass
         elif fmt == "parquet":
             # Parquet is written in a single shot at close() so we buffer here.
             pass
