@@ -87,20 +87,26 @@ def normalise_speaker_id(value: str, record: dict) -> str:
     raw = str(value or "").strip()
     key = raw.lower().replace("-", "_").replace(" ", "_")
     aliases = {
+        # Internal aliases: zero-based pipeline speaker IDs.
         "speaker_00": "SPEAKER_00",
         "speaker00": "SPEAKER_00",
         "speaker_0": "SPEAKER_00",
         "spk0": "SPEAKER_00",
         "spk_0": "SPEAKER_00",
+        # Human aliases: speaker_1 means first human speaker, not SPEAKER_01.
         "speaker_1": "SPEAKER_00",
         "speaker1": "SPEAKER_00",
+        "speaker_one": "SPEAKER_00",
         "spk1": "SPEAKER_00",
         "spk_1": "SPEAKER_00",
-        "speaker_01": "SPEAKER_01",
-        "speaker01": "SPEAKER_01",
+        # Internal second speaker aliases. Do not conflate speaker_01 with
+        # speaker_1: speaker_01 is ambiguous unless speaker_map explicitly
+        # uses it as a label.
         "spk01": "SPEAKER_01",
+        "spk_01": "SPEAKER_01",
         "speaker_2": "SPEAKER_01",
         "speaker2": "SPEAKER_01",
+        "speaker_two": "SPEAKER_01",
         "spk2": "SPEAKER_01",
         "spk_2": "SPEAKER_01",
     }
@@ -111,6 +117,20 @@ def normalise_speaker_id(value: str, record: dict) -> str:
         if raw == canonical or key == str(label).lower().replace("-", "_").replace(" ", "_"):
             return str(canonical)
     return aliases.get(key, raw)
+
+
+def _ambiguous_speaker_alias(value: str, record: dict) -> bool:
+    raw = str(value or "").strip()
+    if raw in {"SPEAKER_00", "SPEAKER_01"}:
+        return False
+    key = raw.lower().replace("-", "_").replace(" ", "_")
+    if key not in {"speaker_01", "speaker01"}:
+        return False
+    speaker_map = record.get("speaker_map") or {}
+    return not any(
+        key == str(label).lower().replace("-", "_").replace(" ", "_")
+        for label in speaker_map.values()
+    )
 
 
 def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[str]]:
@@ -142,6 +162,8 @@ def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[s
         elif sid in seen:
             errors.append(f"segment_{idx}_duplicate_segment_id")
         seen.add(sid)
+        if _ambiguous_speaker_alias(original_speaker, record):
+            errors.append(f"ambiguous_speaker_alias:{original_speaker}")
         if not speaker:
             errors.append(f"{sid or idx}_missing_speaker")
         elif known_speakers and speaker not in known_speakers:

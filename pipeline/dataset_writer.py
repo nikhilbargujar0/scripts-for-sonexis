@@ -548,7 +548,6 @@ class DatasetWriter:
                 "resolved_issue_types": [],
                 "unresolved_issue_types": [],
                 "review_notes": "",
-                "issue_types": list(dict.fromkeys(issue_types)),
                 "needs_review": needs_review,
             })
 

@@ -184,6 +184,7 @@ class ReviewFinalizeTests(unittest.TestCase):
         self.assertEqual(rows[0]["segment_id"], "conversation_0001_seg_00001")
         self.assertIn("review_reasons", rows[0])
         self.assertIn("unresolved_issue_types", rows[0])
+        self.assertNotIn("issue_types", rows[0])
 
     def test_code_switch_review_reason_does_not_fail_if_resolved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,6 +213,20 @@ class ReviewFinalizeTests(unittest.TestCase):
         self.assertFalse(summary["approved_for_client_delivery"])
         self.assertIn("verified_code_switch_accuracy_below_target", summary["failure_reasons"])
 
+    def test_legacy_issue_types_does_not_fail_code_switch_qa(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["language"] = "Hinglish"
+            review["segments"][0]["issue_types"] = ["code_switch"]
+            review["segments"][0]["unresolved_issue_types"] = []
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 0.99)
+
     def test_speaker_alias_spk1_is_normalised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -223,6 +238,55 @@ class ReviewFinalizeTests(unittest.TestCase):
 
         self.assertTrue(summary["approved_for_client_delivery"])
         self.assertEqual(updated["transcript"]["segments"][0]["speaker_id"], "SPEAKER_00")
+
+    def test_speaker_1_maps_to_speaker_00(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["speaker"] = "speaker_1"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(updated["transcript"]["segments"][0]["speaker_id"], "SPEAKER_00")
+
+    def test_speaker_2_maps_to_speaker_01(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][1]["speaker"] = "speaker_2"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(updated["transcript"]["segments"][1]["speaker_id"], "SPEAKER_01")
+
+    def test_speaker_01_is_ambiguous_without_speaker_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][1]["speaker"] = "speaker_01"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("ambiguous_speaker_alias:speaker_01", summary["failure_reasons"])
+
+    def test_speaker_01_allowed_by_explicit_speaker_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = _record()
+            record["speaker_map"] = {"SPEAKER_01": "speaker_01"}
+            review = _review()
+            review["segments"][1]["speaker"] = "speaker_01"
+            ann, rev = self._write_inputs(root, record, review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(updated["transcript"]["segments"][1]["speaker_id"], "SPEAKER_01")
 
     def test_second_pass_required_blocks_if_not_completed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
