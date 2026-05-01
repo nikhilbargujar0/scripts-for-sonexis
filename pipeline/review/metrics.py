@@ -96,9 +96,7 @@ def timestamp_accuracy(reviewed_segments, original_segments) -> float:
         scores.append(max(0.0, 1.0 - (delta / (2.0 * tolerance_s))))
     if not scores:
         return 0.0
-    # Human QA verifies timings, but we still cap exact preservation below 1.0
-    # unless a stricter external timing audit is added later.
-    return round(min(0.985, sum(scores) / len(scores)), 4)
+    return round(sum(scores) / len(scores), 4)
 
 
 def code_switch_review_pass_rate(reviewed_segments) -> float:

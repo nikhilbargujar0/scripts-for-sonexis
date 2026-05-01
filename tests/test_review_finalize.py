@@ -10,6 +10,7 @@ from jsonschema.exceptions import ValidationError
 from pipeline.dataset_writer import DatasetWriter
 from pipeline.output_formatter import DATASET_SCHEMA_VERSION
 from pipeline.review.finalize import finalize_review
+from pipeline.review.metrics import timestamp_accuracy
 from pipeline.schema_validator import validate_record
 
 
@@ -121,12 +122,22 @@ def _review(*, status: str = "completed", blank: bool = False, shifted: bool = F
     }
 
 
+def _jsonl_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 class ReviewFinalizeTests(unittest.TestCase):
     def _write_inputs(self, root: Path, record: dict, review: dict):
         ann = root / "annotations" / "conversation_0001.json"
         rev = root / "review" / "conversation_0001" / "final_reviewed_transcript.json"
-        ann.parent.mkdir(parents=True)
-        rev.parent.mkdir(parents=True)
+        ann.parent.mkdir(parents=True, exist_ok=True)
+        rev.parent.mkdir(parents=True, exist_ok=True)
         ann.write_text(json.dumps(record), encoding="utf-8")
         rev.write_text(json.dumps(review), encoding="utf-8")
         return ann, rev
@@ -341,6 +352,138 @@ class ReviewFinalizeTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["session"], "conversation_0001")
+
+    def test_human_review_state_semantics_for_approved_and_failed_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            approved = json.loads(ann.read_text(encoding="utf-8"))
+
+            ann, rev = self._write_inputs(root, _record(), _review(blank=True))
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            failed = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertTrue(approved["accuracy_gate"]["human_review_required"])
+        self.assertTrue(approved["accuracy_gate"]["human_review_completed"])
+        self.assertFalse(approved["accuracy_gate"]["human_review_required_for_delivery"])
+        self.assertTrue(failed["accuracy_gate"]["human_review_required_for_delivery"])
+
+    def test_status_manifests_remove_stale_rows_when_rejected_then_approved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rejected_review = _review()
+            rejected_review["segments"][1]["speaker"] = "speaker_01"
+            ann, rev = self._write_inputs(root, _record(), rejected_review)
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+            rev.write_text(json.dumps(_review()), encoding="utf-8")
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+            approved_rows = _jsonl_rows(root / "manifests" / "approved_for_delivery.jsonl")
+            rejected_rows = _jsonl_rows(root / "manifests" / "rejected.jsonl")
+
+        self.assertEqual([row["session"] for row in approved_rows], ["conversation_0001"])
+        self.assertNotIn("conversation_0001", [row["session"] for row in rejected_rows])
+
+    def test_status_manifests_remove_stale_rows_when_review_required_then_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review(blank=True))
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001", approve_if_passed=False)
+
+            rejected_review = _review()
+            rejected_review["segments"][1]["speaker"] = "speaker_01"
+            rev.write_text(json.dumps(rejected_review), encoding="utf-8")
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+            manifests = root / "manifests"
+            approved_rows = _jsonl_rows(manifests / "approved_for_delivery.jsonl")
+            review_rows = _jsonl_rows(manifests / "review_required.jsonl")
+            rejected_rows = _jsonl_rows(manifests / "rejected.jsonl")
+
+        self.assertNotIn("conversation_0001", [row["session"] for row in approved_rows])
+        self.assertNotIn("conversation_0001", [row["session"] for row in review_rows])
+        self.assertEqual([row["session"] for row in rejected_rows], ["conversation_0001"])
+
+    def test_manifest_uses_delivery_oriented_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            approved_row = _jsonl_rows(root / "manifests" / "approved_for_delivery.jsonl")[0]
+
+            ann, rev = self._write_inputs(root, _record(), _review(blank=True))
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001", approve_if_passed=False)
+            review_required_row = _jsonl_rows(root / "manifests" / "review_required.jsonl")[0]
+
+        self.assertEqual(
+            approved_row["canonical_transcript_path"],
+            str((root / "transcripts" / "conversation_0001" / "combined_conversation.json").resolve()),
+        )
+        self.assertEqual(approved_row["transcript_path"], approved_row["canonical_transcript_path"])
+        self.assertEqual(
+            approved_row["reviewed_transcript_input_path"],
+            str((root / "review" / "conversation_0001" / "final_reviewed_transcript.json").resolve()),
+        )
+        self.assertEqual(
+            approved_row["qa_report_path"],
+            str((root / "review" / "conversation_0001" / "qa_report.json").resolve()),
+        )
+        self.assertIsNone(review_required_row["canonical_transcript_path"])
+        self.assertIsNone(review_required_row["raw_transcript_path"])
+        self.assertIsNone(review_required_row["normalised_transcript_path"])
+        self.assertIsNone(review_required_row["flat_conversation_path"])
+
+    def test_timestamp_accuracy_can_reach_one_and_gate_on_measured_value(self) -> None:
+        original = _record()["transcript"]["segments"]
+        perfect = _review()["segments"]
+        shifted = _review(shifted=True)["segments"]
+
+        self.assertEqual(timestamp_accuracy(perfect, original), 1.0)
+        self.assertLess(timestamp_accuracy(shifted, original), 0.99)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            approved = finalize_review(
+                str(ann),
+                str(rev),
+                str(root),
+                "reviewer_001",
+                targets={"timestamp_accuracy_target": 0.99},
+            )
+
+            ann, rev = self._write_inputs(root, _record(), _review(shifted=True))
+            rejected = finalize_review(
+                str(ann),
+                str(rev),
+                str(root),
+                "reviewer_001",
+                targets={"timestamp_accuracy_target": 0.99},
+            )
+
+        self.assertTrue(approved["approved_for_client_delivery"])
+        self.assertFalse(rejected["approved_for_client_delivery"])
+        self.assertIn("verified_timestamp_accuracy_below_target", rejected["failure_reasons"])
+
+    def test_schema_validation_failure_leaves_no_partial_finalisation_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original_record = _record()
+            review = _review()
+            review["segments"][0]["segment_id"] = "conversation_0001_seg_missing"
+            ann, rev = self._write_inputs(root, original_record, review)
+            before = ann.read_text(encoding="utf-8")
+
+            with self.assertRaises(ValidationError):
+                finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+            self.assertEqual(ann.read_text(encoding="utf-8"), before)
+            self.assertFalse((root / "review" / "conversation_0001" / "qa_report.json").exists())
+            self.assertFalse((root / "transcripts" / "conversation_0001" / "raw.txt").exists())
+            self.assertFalse((root / "transcripts" / "conversation_0001" / "combined_conversation.json").exists())
+            self.assertFalse((root / "manifests").exists())
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -63,6 +63,35 @@ def upsert_jsonl(path: str | Path, row: Dict, key_field: str = "session") -> Non
     )
 
 
+def remove_jsonl_row(path: str | Path, key, key_field: str = "session") -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    rows: List[Dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        existing = json.loads(line)
+        if existing.get(key_field) != key:
+            rows.append(existing)
+    path.write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
+        encoding="utf-8",
+    )
+
+
+def sync_status_manifests(manifests_dir: str | Path, session: str, row: Dict, stage: str) -> None:
+    manifests_dir = Path(manifests_dir)
+    status_files = {
+        "approved": "approved_for_delivery.jsonl",
+        "review_required": "review_required.jsonl",
+        "rejected": "rejected.jsonl",
+    }
+    for filename in status_files.values():
+        remove_jsonl_row(manifests_dir / filename, session)
+    upsert_jsonl(manifests_dir / status_files.get(stage, "rejected.jsonl"), row)
+
+
 def _targets(record: Dict, overrides: Optional[Dict]) -> Dict[str, float]:
     gate = record.get("accuracy_gate") or {}
     overrides = overrides or {}
@@ -225,12 +254,15 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
             "unresolved_issue_count": unresolved_issue_count,
             "delivery_confidence": round(delivery_confidence, 4),
             "confidence_basis": "completed_human_review_no_empty_segments_no_unresolved_issues",
+            "timestamp_confidence": 0.985,
+            "timestamp_confidence_basis": "human_review_without_external_timing_audit",
         },
         "verified_final": {
             "word_accuracy": round(delivery_confidence, 4),
             "word_accuracy_measurement_type": "reviewed_delivery_confidence",
             "speaker_accuracy": final_speaker,
             "timestamp_accuracy": final_timestamp,
+            "timestamp_accuracy_measurement_type": "reviewed_vs_original_timestamps",
             "code_switch_accuracy": float(code_switch_stats["accuracy"]),
             "verified_accuracy": bool(review_completed),
             "verification_method": "human_review" if review_completed else None,
@@ -285,41 +317,56 @@ def _update_canonical_transcript(record: Dict, reviewed_segments: List[Dict]) ->
     record["final_transcript_source"] = "human_review"
 
 
-def write_final_transcript_side_files(
+def build_final_transcript_side_file_paths(
     output_root: str,
     session: str,
     record: dict,
 ) -> dict:
     root = Path(output_root) / "transcripts"
     session_dir = root / session
-    session_dir.mkdir(parents=True, exist_ok=True)
-    transcript = record.get("transcript", {})
     raw_path = session_dir / "raw.txt"
     norm_path = session_dir / "normalised.txt"
     combined_path = session_dir / "combined_conversation.json"
     flat_path = root / f"{session}.json"
-    raw_path.write_text(transcript.get("raw", ""), encoding="utf-8")
-    norm_path.write_text(transcript.get("normalised", ""), encoding="utf-8")
-    _write_json(combined_path, record.get("conversation_transcript", []))
-    _write_json(flat_path, record.get("conversation_transcript", []))
-    speaker_paths: Dict[str, str] = {}
-    for speaker, text in (record.get("speaker_transcripts") or {}).items():
-        path = session_dir / f"speaker_{safe_filename(speaker)}.json"
-        _write_json(path, {"speaker": speaker, "text": text})
-        speaker_paths[speaker] = str(path.resolve())
     return {
         "raw_txt": str(raw_path.resolve()),
         "normalised_txt": str(norm_path.resolve()),
         "combined_conversation_json": str(combined_path.resolve()),
         "flat_conversation_json": str(flat_path.resolve()),
-        "speaker_transcripts": speaker_paths,
+        "speaker_transcripts": {
+            speaker: str((session_dir / f"speaker_{safe_filename(speaker)}.json").resolve())
+            for speaker in (record.get("speaker_transcripts") or {})
+        },
     }
+
+
+def write_final_transcript_side_files(
+    output_root: str,
+    session: str,
+    record: dict,
+) -> dict:
+    paths = build_final_transcript_side_file_paths(output_root, session, record)
+    session_dir = Path(paths["raw_txt"]).parent
+    session_dir.mkdir(parents=True, exist_ok=True)
+    transcript = record.get("transcript", {})
+    Path(paths["raw_txt"]).write_text(transcript.get("raw", ""), encoding="utf-8")
+    Path(paths["normalised_txt"]).write_text(transcript.get("normalised", ""), encoding="utf-8")
+    _write_json(paths["combined_conversation_json"], record.get("conversation_transcript", []))
+    _write_json(paths["flat_conversation_json"], record.get("conversation_transcript", []))
+    for speaker, text in (record.get("speaker_transcripts") or {}).items():
+        _write_json(paths["speaker_transcripts"][speaker], {"speaker": speaker, "text": text})
+    return paths
 
 
 def _update_accuracy_gate(record: Dict, metrics: Dict, targets: Dict[str, float], validation_errors: List[str]) -> List[str]:
     gate = dict(record.get("accuracy_gate") or {})
     verified = metrics["verified_final"]
     reasons = list(validation_errors)
+    review_was_required = bool(
+        gate.get("human_review_required")
+        or (record.get("human_review") or {}).get("required")
+        or reasons
+    )
     comparisons = [
         ("word", verified["word_accuracy"], targets["word_accuracy"]),
         ("speaker", verified["speaker_accuracy"], targets["speaker_accuracy"]),
@@ -341,7 +388,9 @@ def _update_accuracy_gate(record: Dict, metrics: Dict, targets: Dict[str, float]
         "estimated": bool(gate.get("estimated", True)),
         "verified_accuracy": bool(verified["verified_accuracy"] and not reasons),
         "passed": not reasons,
-        "human_review_required": bool(reasons),
+        "human_review_required": review_was_required,
+        "human_review_completed": bool(verified["verified_accuracy"]),
+        "human_review_required_for_delivery": bool(reasons),
         "reasons": list(dict.fromkeys(reasons)),
     })
     record["accuracy_gate"] = gate
@@ -358,11 +407,12 @@ def finalize_review(
 ) -> dict:
     record = _read_json(annotation_path)
     reviewed = _read_json(reviewed_transcript_path)
-    record.setdefault("pipeline_mode", "offline_standard")
-    session = str(record.get("session_name") or record.get("session_id") or Path(annotation_path).stem)
+    candidate = deepcopy(record)
+    candidate.setdefault("pipeline_mode", "offline_standard")
+    session = str(candidate.get("session_name") or candidate.get("session_id") or Path(annotation_path).stem)
     now = _now()
-    target_values = _targets(record, targets)
-    reviewed_segments, review_errors = _validate_reviewed(reviewed, record)
+    target_values = _targets(candidate, targets)
+    reviewed_segments, review_errors = _validate_reviewed(reviewed, candidate)
     second_pass = reviewed.get("second_pass_review") or {
         "required": False,
         "completed": False,
@@ -374,33 +424,35 @@ def finalize_review(
         review_errors.append("second_pass_review_required_not_completed")
     completed = reviewed.get("status") == "completed" and not review_errors
     can_update_canonical = completed and bool(reviewed_segments)
-    original_segments = deepcopy(record.get("transcript", {}).get("segments", []))
+    original_segments = deepcopy(candidate.get("transcript", {}).get("segments", []))
     metrics = _compute_metrics(reviewed_segments, original_segments, completed)
     metrics["reviewed_delivery"]["word_accuracy_target"] = target_values["word_accuracy"]
     metrics["reviewed_delivery"]["second_pass_review"] = second_pass
-    validation_passed = bool(record.get("validation", {}).get("passed"))
-    gate_reasons = _update_accuracy_gate(record, metrics, target_values, [] if completed else review_errors)
+    validation_passed = bool(candidate.get("validation", {}).get("passed"))
+    gate_reasons = _update_accuracy_gate(candidate, metrics, target_values, [] if completed else review_errors)
     if not validation_passed:
         gate_reasons = list(dict.fromkeys([*gate_reasons, "validation_failed"]))
-        record["accuracy_gate"]["passed"] = False
-        record["accuracy_gate"]["verified_accuracy"] = False
-        record["accuracy_gate"]["human_review_required"] = True
-        record["accuracy_gate"]["reasons"] = gate_reasons
+        candidate["accuracy_gate"]["passed"] = False
+        candidate["accuracy_gate"]["verified_accuracy"] = False
+        candidate["accuracy_gate"]["human_review_required"] = True
+        candidate["accuracy_gate"]["human_review_completed"] = bool(completed)
+        candidate["accuracy_gate"]["human_review_required_for_delivery"] = True
+        candidate["accuracy_gate"]["reasons"] = gate_reasons
 
-    passed = bool(completed and validation_passed and record["accuracy_gate"]["passed"])
+    passed = bool(completed and validation_passed and candidate["accuracy_gate"]["passed"])
     approved = bool(approve_if_passed and passed)
     if can_update_canonical:
-        _update_canonical_transcript(record, reviewed_segments)
-        side_files = write_final_transcript_side_files(output_root, session, record)
-        record.setdefault("artifacts", {})
-        record["artifacts"]["final_transcript_files"] = side_files
+        _update_canonical_transcript(candidate, reviewed_segments)
+        side_files = build_final_transcript_side_file_paths(output_root, session, candidate)
+        candidate.setdefault("artifacts", {})
+        candidate["artifacts"]["final_transcript_files"] = side_files
     else:
         side_files = {}
 
     review_dir = Path(output_root) / "review" / session
     qa_path = review_dir / "qa_report.json"
     final_path = Path(reviewed_transcript_path)
-    failure_reasons = list(record["accuracy_gate"].get("reasons") or [])
+    failure_reasons = list(candidate["accuracy_gate"].get("reasons") or [])
     if not completed:
         failure_reasons = list(dict.fromkeys([*failure_reasons, *review_errors]))
     qa_report = {
@@ -419,10 +471,9 @@ def finalize_review(
         "code_switch_segment_count": metrics["code_switch"]["code_switch_segment_count"],
         "unresolved_code_switch_count": metrics["code_switch"]["unresolved_code_switch_count"],
     }
-    _write_json(qa_path, qa_report)
 
     if approved:
-        record["human_review"] = {
+        candidate["human_review"] = {
             "required": True,
             "status": "completed",
             "review_stage": "final_qa",
@@ -435,7 +486,7 @@ def finalize_review(
                 "second_pass_review": second_pass,
             },
         }
-        record["delivery_status"] = {
+        candidate["delivery_status"] = {
             "stage": "approved",
             "approved_for_client_delivery": True,
             "approved_by": reviewer_id,
@@ -443,8 +494,8 @@ def finalize_review(
             "reason": "",
         }
     elif not completed and not approve_if_passed:
-        record.setdefault("human_review", {})
-        record["human_review"].update({
+        candidate.setdefault("human_review", {})
+        candidate["human_review"].update({
             "required": True,
             "status": "pending",
             "review_stage": "transcript_review",
@@ -456,7 +507,7 @@ def finalize_review(
                 "failure_reasons": failure_reasons,
             },
         })
-        record["delivery_status"] = {
+        candidate["delivery_status"] = {
             "stage": "review_required",
             "approved_for_client_delivery": False,
             "approved_by": None,
@@ -464,7 +515,7 @@ def finalize_review(
             "reason": ";".join(failure_reasons),
         }
     else:
-        record["human_review"] = {
+        candidate["human_review"] = {
             "required": True,
             "status": "needs_correction",
             "review_stage": "correction_required",
@@ -476,7 +527,7 @@ def finalize_review(
                 "failure_reasons": failure_reasons,
             },
         }
-        record["delivery_status"] = {
+        candidate["delivery_status"] = {
             "stage": "rejected",
             "approved_for_client_delivery": False,
             "approved_by": None,
@@ -484,35 +535,47 @@ def finalize_review(
             "reason": ";".join(failure_reasons),
         }
 
-    record.setdefault("review_artifacts", {})
-    record["review_artifacts"].update({
+    candidate.setdefault("review_artifacts", {})
+    candidate["review_artifacts"].update({
         "final_reviewed_transcript": str(final_path.resolve()),
         "qa_report": str(qa_path.resolve()),
     })
-    record["last_finalized_at"] = now
-    record["last_finalized_by"] = reviewer_id
-    validate_record(record)
-    _write_json(annotation_path, record)
+    candidate["last_finalized_at"] = now
+    candidate["last_finalized_by"] = reviewer_id
+    validate_record(candidate)
+
+    if can_update_canonical:
+        side_files = write_final_transcript_side_files(output_root, session, candidate)
+        candidate["artifacts"]["final_transcript_files"] = side_files
+    _write_json(qa_path, qa_report)
+    _write_json(annotation_path, candidate)
 
     manifests = Path(output_root) / "manifests"
+    artifact_paths = (candidate.get("artifacts") or {}).get("final_transcript_files") or {}
+    canonical_transcript_path = artifact_paths.get("combined_conversation_json")
+    raw_transcript_path = artifact_paths.get("raw_txt")
+    normalised_transcript_path = artifact_paths.get("normalised_txt")
+    flat_conversation_path = artifact_paths.get("flat_conversation_json")
     base_row = {
         "session": session,
-        "transcript_path": str(final_path.resolve()),
+        "transcript_path": canonical_transcript_path,
         "annotation_path": str(Path(annotation_path).resolve()),
-        "review_status": record["human_review"]["status"],
-        "approved_for_client_delivery": record["delivery_status"]["approved_for_client_delivery"],
-        "verified_word_accuracy": record["accuracy_gate"].get("verified_word_accuracy"),
-        "verified_speaker_accuracy": record["accuracy_gate"].get("verified_speaker_accuracy"),
-        "verified_timestamp_accuracy": record["accuracy_gate"].get("verified_timestamp_accuracy"),
-        "verified_code_switch_accuracy": record["accuracy_gate"].get("verified_code_switch_accuracy"),
+        "reviewed_transcript_input_path": str(final_path.resolve()),
+        "qa_report_path": str(qa_path.resolve()),
+        "canonical_transcript_path": canonical_transcript_path,
+        "raw_transcript_path": raw_transcript_path,
+        "normalised_transcript_path": normalised_transcript_path,
+        "flat_conversation_path": flat_conversation_path,
+        "review_status": candidate["human_review"]["status"],
+        "delivery_stage": candidate["delivery_status"]["stage"],
+        "approved_for_client_delivery": candidate["delivery_status"]["approved_for_client_delivery"],
+        "verified_word_accuracy": candidate["accuracy_gate"].get("verified_word_accuracy"),
+        "verified_speaker_accuracy": candidate["accuracy_gate"].get("verified_speaker_accuracy"),
+        "verified_timestamp_accuracy": candidate["accuracy_gate"].get("verified_timestamp_accuracy"),
+        "verified_code_switch_accuracy": candidate["accuracy_gate"].get("verified_code_switch_accuracy"),
     }
     upsert_jsonl(manifests / "final_transcripts.jsonl", base_row)
-    if approved:
-        upsert_jsonl(manifests / "approved_for_delivery.jsonl", base_row)
-    elif record["delivery_status"]["stage"] == "review_required":
-        upsert_jsonl(manifests / "review_required.jsonl", base_row)
-    else:
-        upsert_jsonl(manifests / "rejected.jsonl", base_row)
+    sync_status_manifests(manifests, session, base_row, candidate["delivery_status"]["stage"])
 
     return {
         "session": session,
@@ -520,7 +583,7 @@ def finalize_review(
         "qa_report_path": str(qa_path.resolve()),
         "passed": passed,
         "approved_for_client_delivery": approved,
-        "delivery_status": record["delivery_status"],
-        "accuracy_gate": record["accuracy_gate"],
+        "delivery_status": candidate["delivery_status"],
+        "accuracy_gate": candidate["accuracy_gate"],
         "failure_reasons": failure_reasons,
     }
