@@ -22,12 +22,14 @@ from ..premium.asr_router import PremiumASRRouter
 from ..premium.consensus import choose_consensus
 from ..premium.quality import (
     build_code_switch_metadata,
+    build_accuracy_gate,
     build_premium_processing,
     build_quality_metrics,
     build_quality_targets,
     build_tts_suitability,
 )
 from ..premium.review import build_human_review
+from ..premium.types import AlignmentResult, ConsensusResult
 from ..quality_checker import check_speaker_pair
 from ..roman_indic_classifier import RomanIndicClassifier
 from ..steps.alignment import AlignmentError, align_pair
@@ -232,6 +234,12 @@ def _merge_speaker_transcripts(
     )
 
 
+def _mark_transcript_speaker(transcript: Transcript, pipeline_label: str) -> Transcript:
+    for seg in transcript.segments:
+        setattr(seg, "ground_truth_speaker", pipeline_label)
+    return transcript
+
+
 def process_speaker_pair(
     pair: SpeakerPairAudio,
     transcriber: Transcriber,
@@ -283,9 +291,81 @@ def process_speaker_pair(
     per_speaker_transcripts: Dict[str, Transcript] = {}
     if pair.recording_type == "studio_speaker_folders":
         transcriber.cfg = asr_cfg
-        for human_label, wav in speaker_wavs.items():
-            per_speaker_transcripts[human_label] = transcriber.transcribe(wav, pair.mixed.sample_rate)
-        transcript_override = _merge_speaker_transcripts(per_speaker_transcripts, speaker_map)
+        if pipeline_mode == "premium_accuracy":
+            per_speaker_consensus: Dict[str, ConsensusResult] = {}
+            per_speaker_alignment: Dict[str, AlignmentResult] = {}
+            for pipeline_label, human_label in speaker_map.items():
+                wav = speaker_wavs[human_label]
+                router = PremiumASRRouter(
+                    cfg=cfg,
+                    whisper_adapter=WhisperLocalAdapter(
+                        transcriber=transcriber,
+                        asr_cfg=asr_cfg,
+                        fasttext_lid=ft_lid,
+                        roman_indic_classifier=classifier,
+                    ),
+                    fasttext_lid=ft_lid,
+                    roman_indic_classifier=classifier,
+                )
+                routed = router.run(
+                    wav,
+                    pair.mixed.sample_rate,
+                    audio_meta=preview_audio_meta,
+                    overlap_duration_s=expected_overlap_s,
+                )
+                speaker_candidates = list(routed["candidates"])
+                for candidate in speaker_candidates:
+                    candidate.adapter_metadata["speaker_label"] = human_label
+                    candidate.adapter_metadata["speaker_id"] = pipeline_label
+                    transcript_candidates.append(candidate)
+                routing_decision = routed["routing_decision"]
+                selected, consensus = choose_consensus(
+                    speaker_candidates,
+                    audio_condition=normalize_recording_condition(preview_audio_meta),
+                )
+                refined = refine_timestamps(selected, wav=wav, sample_rate=pair.mixed.sample_rate, cfg=cfg)
+                _mark_transcript_speaker(refined.transcript, pipeline_label)
+                per_speaker_transcripts[human_label] = refined.transcript
+                per_speaker_consensus[human_label] = consensus
+                per_speaker_alignment[human_label] = refined
+            transcript_override = _merge_speaker_transcripts(per_speaker_transcripts, speaker_map)
+            consensus_scores = [c.consensus_score for c in per_speaker_consensus.values()]
+            timestamp_scores = [a.timestamp_confidence for a in per_speaker_alignment.values()]
+            selected_candidate = transcript_candidates[0] if transcript_candidates else None
+            consensus_result = ConsensusResult(
+                transcript=transcript_override,
+                selected_engine="speaker_consensus",
+                consensus_score=round(float(min(consensus_scores) if consensus_scores else 0.0), 4),
+                engines_compared=list(dict.fromkeys(c.engine for c in transcript_candidates)),
+                transcript_strategy="per_speaker_consensus",
+                review_recommended=bool(any(c.review_recommended for c in per_speaker_consensus.values())),
+                rationale=["speaker_folder_premium_consensus", "speaker_separated_asr_candidates_preserved"],
+                candidate_rationales={
+                    f"{human_label}:{engine}": rationale
+                    for human_label, consensus in per_speaker_consensus.items()
+                    for engine, rationale in consensus.candidate_rationales.items()
+                },
+                disagreement_flags=list(dict.fromkeys(
+                    flag
+                    for consensus in per_speaker_consensus.values()
+                    for flag in consensus.disagreement_flags
+                )),
+            )
+            alignment_result = AlignmentResult(
+                transcript=transcript_override,
+                timestamp_method="per_speaker_alignment",
+                timestamp_confidence=round(float(min(timestamp_scores) if timestamp_scores else 0.0), 4),
+                word_timestamps_available=any(seg.words for seg in transcript_override.segments),
+                segment_timestamps_available=any(seg.end > seg.start for seg in transcript_override.segments),
+                refinement_applied=any(a.refinement_applied for a in per_speaker_alignment.values()),
+                synthetic_word_timestamps=any(a.synthetic_word_timestamps for a in per_speaker_alignment.values()),
+                timing_quality="high" if timestamp_scores and min(timestamp_scores) >= 0.98 else "medium",
+                notes=["per_speaker_premium_alignment"],
+            )
+        else:
+            for human_label, wav in speaker_wavs.items():
+                per_speaker_transcripts[human_label] = transcriber.transcribe(wav, pair.mixed.sample_rate)
+            transcript_override = _merge_speaker_transcripts(per_speaker_transcripts, speaker_map)
     elif pipeline_mode == "premium_accuracy":
         router = PremiumASRRouter(
             cfg=cfg,
@@ -383,6 +463,16 @@ def process_speaker_pair(
             }
     quality_targets = build_quality_targets(cfg)
     quality_metrics = build_quality_metrics()
+    accuracy_gate = build_accuracy_gate(
+        cfg=cfg,
+        consensus=consensus_result,
+        alignment=alignment_result,
+        code_switch=code_switch,
+        speaker_attribution_confidence=1.0,
+    )
+    quality_metrics["estimated_word_accuracy"] = accuracy_gate["estimated_word_accuracy"]
+    quality_metrics["estimated_timestamp_accuracy"] = accuracy_gate["estimated_timestamp_accuracy"]
+    quality_metrics["estimated_code_switch_accuracy"] = accuracy_gate.get("estimated_code_switch_accuracy")
     human_review = build_human_review(
         pipeline_mode=pipeline_mode,
         require_human_review=bool(getattr(cfg, "require_human_review", True)),
@@ -391,6 +481,9 @@ def process_speaker_pair(
         routing=routing_decision,
         audio_condition=normalize_recording_condition(audio_meta),
         code_switch=code_switch,
+        accuracy_gate=accuracy_gate,
+        targets=quality_targets,
+        speaker_attribution_confidence=1.0,
     )
     tts_suitability = build_tts_suitability(
         record_or_meta=audio_meta,
@@ -490,6 +583,7 @@ def process_speaker_pair(
     record["tts_suitability"] = tts_suitability
     record["dataset_products"] = _dataset_products(cfg)
     record["premium_processing"] = premium_processing
+    record["accuracy_gate"] = accuracy_gate
     if input_mode == "speaker_folders":
         record["metadata_json"] = metadata
         record["inferred_metadata"] = {
@@ -541,6 +635,21 @@ def process_speaker_pair(
         record["timestamp_method"] = alignment_result.timestamp_method
         record["timestamp_confidence"] = round(float(alignment_result.timestamp_confidence), 4)
         record["timestamp_refinement"] = alignment_result.to_dict()
+    review_required = bool(record.get("human_review", {}).get("required"))
+    delivery_passed = bool(
+        record.get("accuracy_gate", {}).get("passed")
+        and record.get("validation", {}).get("passed")
+        and not review_required
+    )
+    record["delivery_status"] = {
+        "stage": "approved" if delivery_passed else ("review_required" if review_required else "rejected"),
+        "approved_for_client_delivery": delivery_passed,
+        "reason": "" if delivery_passed else ";".join(
+            list(record.get("accuracy_gate", {}).get("reasons") or [])
+            or (["human_review_pending"] if review_required else [])
+            or (["validation_failed"] if not record.get("validation", {}).get("passed") else [])
+        ),
+    }
     if cfg.include_runtime_metrics:
         record["processing_time_s"] = round(time.time() - t0, 3)
 

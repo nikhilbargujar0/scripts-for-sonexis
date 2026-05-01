@@ -44,12 +44,17 @@ def _preferred_engines(cfg: PipelineConfig) -> List[str]:
     values = premium.get("preferred_asr_engines") or getattr(cfg, "preferred_asr_engines", None)
     if values:
         return [str(value) for value in values]
+    explicit = getattr(cfg, "premium_engines", None)
+    if explicit:
+        return [str(value) for value in explicit]
     return ["whisper_local", "deepgram", "google_stt_v2"]
 
 
 def _engine_enabled(cfg: PipelineConfig, engine_name: str) -> bool:
     if engine_name == "whisper_local":
         return True
+    if engine_name in set(getattr(cfg, "premium_engines", []) or []):
+        return bool(_allow_paid_apis(cfg))
     config = _engine_cfg(cfg, engine_name)
     if "enabled" in config:
         return bool(config.get("enabled"))
@@ -127,7 +132,8 @@ class PremiumASRRouter:
             review_priority=review_priority,
         )
         decision = build_routing_decision(context, attempted_engines=attempted_engines, skipped_engines=skipped_engines, engines_used=engines_used)
-        if not decision.should_escalate:
+        force_multi_engine = _pipeline_mode(self.cfg) == "premium_accuracy" and _allow_paid_apis(self.cfg)
+        if not decision.should_escalate and not force_multi_engine:
             return {
                 "candidates": candidates,
                 "routing_decision": decision,

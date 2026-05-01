@@ -102,6 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow_paid_apis", "--allow-paid-apis", type=_bool, default=False)
     p.add_argument("--premium_config", "--premium-config", default=None)
     p.add_argument("--require_human_review", "--require-human-review", type=_bool, default=True)
+    p.add_argument("--transcript_accuracy_target", "--transcript-accuracy-target", type=float, default=0.99)
+    p.add_argument("--word_accuracy_target", "--word-accuracy-target", type=float, default=0.99)
+    p.add_argument("--speaker_accuracy_target", "--speaker-accuracy-target", type=float, default=0.99)
+    p.add_argument("--timestamp_accuracy_target", "--timestamp-accuracy-target", type=float, default=0.98)
+    p.add_argument("--code_switch_accuracy_target", "--code-switch-accuracy-target", type=float, default=0.99)
+    p.add_argument("--review_threshold", "--review-threshold", type=float, default=0.99)
+    p.add_argument("--premium_engines", "--premium-engines", default="whisper_local,deepgram,google_stt_v2,azure_speech")
     p.add_argument("--export_products", "--export-products", default="stt,diarisation,evaluation_gold")
     return p
 
@@ -158,12 +165,20 @@ def main(argv: list[str] | None = None) -> int:
         pipeline_mode=args.pipeline_mode,
         allow_paid_apis=args.allow_paid_apis,
         require_human_review=args.require_human_review,
+        transcript_accuracy_target=args.transcript_accuracy_target,
+        word_accuracy_target=args.word_accuracy_target,
+        speaker_accuracy_target=args.speaker_accuracy_target,
+        timestamp_accuracy_target=args.timestamp_accuracy_target,
+        code_switch_accuracy_target=args.code_switch_accuracy_target,
+        review_threshold=args.review_threshold,
+        premium_engines=[item.strip() for item in args.premium_engines.split(",") if item.strip()],
         export_products=[item.strip() for item in args.export_products.split(",") if item.strip()],
         premium=premium_cfg or PipelineConfig().premium,
     )
     if cfg.pipeline_mode == "premium_accuracy":
         cfg.premium["enabled"] = True
         cfg.premium["allow_paid_apis"] = bool(cfg.allow_paid_apis)
+        cfg.premium["preferred_asr_engines"] = list(cfg.premium_engines)
     result = process_conversation(args.input, args.output, cfg)
     summary = {
         "output_path": result["output_path"],

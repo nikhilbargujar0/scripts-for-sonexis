@@ -484,6 +484,99 @@ class DatasetWriter:
             if row.get("monologue_path"):
                 _append_jsonl(monologues_manifest, row)
 
+    def write_review_artifacts(self, session_name: str, record: Dict) -> Dict[str, str]:
+        """Write premium review package for one conversation."""
+        out_dir = self.root / "review" / session_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        candidates_path = out_dir / "asr_candidates.json"
+        consensus_path = out_dir / "consensus_transcript.json"
+        template_path = out_dir / "human_review_template.json"
+        final_path = out_dir / "final_reviewed_transcript.json"
+        qa_path = out_dir / "qa_report.json"
+
+        segments = record.get("transcript", {}).get("segments", [])
+        template_rows: List[Dict[str, Any]] = []
+        gate_reasons = set(record.get("accuracy_gate", {}).get("reasons") or [])
+        for segment in segments:
+            confidence = segment.get("confidence")
+            if confidence is None:
+                confidence = segment.get("quality_score")
+            issue_types = []
+            if segment.get("overlap"):
+                issue_types.append("overlap")
+            if segment.get("cs_density"):
+                issue_types.append("code_switch")
+            if gate_reasons:
+                issue_types.extend(sorted(gate_reasons))
+            needs_review = bool(record.get("human_review", {}).get("required") or issue_types)
+            template_rows.append({
+                "segment_id": segment.get("segment_id"),
+                "speaker": segment.get("speaker_id"),
+                "start": segment.get("start"),
+                "end": segment.get("end"),
+                "asr_text": segment.get("text"),
+                "reviewed_text": "",
+                "language": segment.get("language"),
+                "confidence": confidence,
+                "issue_types": list(dict.fromkeys(issue_types)),
+                "needs_review": needs_review,
+            })
+
+        _write_json(candidates_path, record.get("transcript_candidates", []))
+        _write_json(consensus_path, {
+            "consensus": record.get("consensus", {}),
+            "transcript": record.get("transcript", {}),
+            "disagreement_regions": record.get("consensus", {}).get("disagreement_flags", []),
+            "low_confidence_regions": [
+                row for row in template_rows if row["needs_review"]
+            ],
+        })
+        _write_json(template_path, template_rows)
+        _write_json(final_path, {
+            "status": "pending_human_review",
+            "canonical_after_review": True,
+            "segments": template_rows,
+        })
+        _write_json(qa_path, {
+            "accuracy_gate": record.get("accuracy_gate", {}),
+            "human_review": record.get("human_review", {}),
+            "delivery_status": record.get("delivery_status", {}),
+            "verified_accuracy": False,
+            "notes": "Estimated accuracy is not verified until human QA is completed.",
+        })
+        artifacts = {
+            "asr_candidates": str(candidates_path.resolve()),
+            "consensus_transcript": str(consensus_path.resolve()),
+            "human_review_template": str(template_path.resolve()),
+            "final_reviewed_transcript": str(final_path.resolve()),
+            "qa_report": str(qa_path.resolve()),
+        }
+        record["review_artifacts"] = artifacts
+        return artifacts
+
+    def append_review_manifests(self, record: Dict) -> None:
+        session = record.get("session_name", "")
+        delivery = record.get("delivery_status", {})
+        review = record.get("human_review", {})
+        row = {
+            "session": session,
+            "stage": delivery.get("stage"),
+            "approved_for_client_delivery": delivery.get("approved_for_client_delivery", False),
+            "human_review_required": review.get("required", False),
+            "human_review_status": review.get("status"),
+            "accuracy_gate_passed": record.get("accuracy_gate", {}).get("passed"),
+            "annotation_path": str((self.annotations_root / f"{session}.json").resolve()),
+        }
+        if review.get("required"):
+            _append_jsonl(self.manifests_root / "review_required.jsonl", row)
+        if delivery.get("approved_for_client_delivery"):
+            _append_jsonl(self.manifests_root / "approved_for_delivery.jsonl", row)
+        _append_jsonl(self.manifests_root / "final_transcripts.jsonl", {
+            **row,
+            "transcript_path": (record.get("review_artifacts") or {}).get("final_reviewed_transcript"),
+            "canonical_transcript_pending_review": bool(review.get("required")),
+        })
+
     # ── high-level session write ───────────────────────────────────────────
 
     def write_session(
@@ -557,6 +650,8 @@ class DatasetWriter:
         predicted_ann_path = str((self.annotations_root / f"{session_name}.json").resolve())
         written["annotation"] = predicted_ann_path
         classify_record(record)
+        review_artifacts = self.write_review_artifacts(session_name, record)
+        written.update({f"review_{k}": v for k, v in review_artifacts.items()})
         review_path = write_review_queue(record, str(self.root))
         if review_path:
             written["review_queue"] = review_path
@@ -599,6 +694,7 @@ class DatasetWriter:
             speaker_lang=speaker_lang,
             monologue_paths=monologue_paths,
         )
+        self.append_review_manifests(record)
 
         self._log.info(
             "Session %s written — %d artifacts", session_name, len(written)

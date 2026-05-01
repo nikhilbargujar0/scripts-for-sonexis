@@ -125,12 +125,15 @@ class PipelineConfig:
     recording_context: Optional[str] = None
     consent_status: Optional[str] = None
     user_metadata: Dict = field(default_factory=dict)
-    transcript_accuracy_target: float = 0.98
+    transcript_accuracy_target: float = 0.99
     timestamp_accuracy_target: float = 0.98
     metadata_review_required: bool = True
     pipeline_mode: str = "offline_standard"
     allow_paid_apis: bool = False
     require_human_review: bool = True
+    review_threshold: float = 0.99
+    speaker_accuracy_target: float = 0.99
+    premium_engines: List[str] = field(default_factory=lambda: ["whisper_local", "deepgram", "google_stt_v2", "azure_speech"])
     punctuation_enabled: bool = True
     punctuation_device: Optional[str] = None
     punctuation_model: Optional[str] = None
@@ -166,8 +169,8 @@ class PipelineConfig:
             "vendor_word_timestamps_enabled": True,
         },
     })
-    word_accuracy_target: float = 0.98
-    code_switch_accuracy_target: float = 0.98
+    word_accuracy_target: float = 0.99
+    code_switch_accuracy_target: float = 0.99
 
     def resolve(self) -> "PipelineConfig":
         """Resolve computed defaults in-place and return self.
@@ -237,4 +240,6 @@ class PipelineConfig:
             d["store_candidate_words"] = d["store_candidate_words"].lower() in ("true", "1", "yes")
         if "export_products" in d and isinstance(d["export_products"], str):
             d["export_products"] = [item.strip() for item in d["export_products"].split(",") if item.strip()]
+        if "premium_engines" in d and isinstance(d["premium_engines"], str):
+            d["premium_engines"] = [item.strip() for item in d["premium_engines"].split(",") if item.strip()]
         return cls.from_dict(d)

@@ -27,10 +27,68 @@ def build_quality_targets(cfg: PipelineConfig) -> Dict[str, Any]:
         else getattr(cfg, "metadata_review_required", True)
     )
     return {
+        "transcript_accuracy_target": round(float(getattr(cfg, "transcript_accuracy_target", word_target) or word_target), 4),
         "word_accuracy_target": round(word_target, 4),
+        "speaker_accuracy_target": round(float(getattr(cfg, "speaker_accuracy_target", 0.99) or 0.99), 4),
         "timestamp_accuracy_target": round(timestamp_target, 4),
         "code_switch_accuracy_target": round(code_switch_target, 4),
         "human_review_required": human_review_required,
+    }
+
+
+def build_accuracy_gate(
+    *,
+    cfg: PipelineConfig,
+    consensus: Optional[ConsensusResult] = None,
+    alignment: Optional[AlignmentResult] = None,
+    code_switch: Optional[Dict[str, Any]] = None,
+    speaker_attribution_confidence: float = 1.0,
+) -> Dict[str, Any]:
+    """Build conservative estimated accuracy gates.
+
+    These values are estimates from model confidence and cross-engine agreement;
+    only completed human QA should be treated as verified accuracy.
+    """
+    target_word = float(getattr(cfg, "word_accuracy_target", 0.99) or 0.99)
+    target_speaker = float(getattr(cfg, "speaker_accuracy_target", 0.99) or 0.99)
+    target_timestamp = float(getattr(cfg, "timestamp_accuracy_target", 0.98) or 0.98)
+    target_code_switch = float(getattr(cfg, "code_switch_accuracy_target", 0.99) or 0.99)
+    consensus_score = float(consensus.consensus_score if consensus is not None else 0.0)
+    timestamp_conf = float(alignment.timestamp_confidence if alignment is not None else 0.0)
+    code_switch_detected = bool((code_switch or {}).get("detected"))
+    code_switch_conf = float((code_switch or {}).get("confidence") or (consensus_score if not code_switch_detected else min(consensus_score, 0.75)))
+
+    estimated_word = min(consensus_score, float(getattr(cfg, "review_threshold", 0.99) or 0.99))
+    estimated_speaker = float(speaker_attribution_confidence or 0.0)
+    estimated_timestamp = timestamp_conf
+    estimated_code_switch = code_switch_conf if code_switch_detected else min(1.0, max(consensus_score, 0.99))
+
+    reasons = []
+    if estimated_word < target_word:
+        reasons.append("estimated_word_accuracy_below_target")
+    if estimated_speaker < target_speaker:
+        reasons.append("estimated_speaker_accuracy_below_target")
+    if estimated_timestamp < target_timestamp:
+        reasons.append("estimated_timestamp_accuracy_below_target")
+    if code_switch_detected and estimated_code_switch < target_code_switch:
+        reasons.append("estimated_code_switch_accuracy_below_target")
+    if consensus is not None and consensus.consensus_score < 0.95:
+        reasons.append("consensus_score_below_review_threshold")
+
+    return {
+        "target_word_accuracy": round(target_word, 4),
+        "estimated_word_accuracy": round(float(estimated_word), 4),
+        "target_speaker_accuracy": round(target_speaker, 4),
+        "estimated_speaker_accuracy": round(float(estimated_speaker), 4),
+        "target_timestamp_accuracy": round(target_timestamp, 4),
+        "estimated_timestamp_accuracy": round(float(estimated_timestamp), 4),
+        "target_code_switch_accuracy": round(target_code_switch, 4),
+        "estimated_code_switch_accuracy": round(float(estimated_code_switch), 4),
+        "estimated": True,
+        "verified_accuracy": False,
+        "passed": not reasons,
+        "human_review_required": bool(reasons),
+        "reasons": reasons,
     }
 
 
@@ -70,6 +128,7 @@ def build_code_switch_metadata(
             dominant.append(language)
     return {
         "detected": bool(code_switch.get("detected") or code_switch.get("switch_count")),
+        "confidence": round(float(code_switch.get("confidence") or code_switch.get("switching_score") or 0.0), 4),
         "dominant_languages": dominant,
         "switch_count": int(code_switch.get("switch_count") or 0),
         "switch_patterns": list(code_switch.get("switch_patterns") or code_switch.get("patterns") or []),

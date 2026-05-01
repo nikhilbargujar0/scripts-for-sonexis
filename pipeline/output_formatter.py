@@ -350,6 +350,28 @@ def _default_timestamp_refinement() -> Dict:
     }
 
 
+def _default_accuracy_gate() -> Dict:
+    return {
+        "target_word_accuracy": 0.99,
+        "estimated_word_accuracy": 0.0,
+        "target_speaker_accuracy": 0.99,
+        "estimated_speaker_accuracy": 0.0,
+        "target_timestamp_accuracy": 0.98,
+        "estimated_timestamp_accuracy": 0.0,
+        "passed": False,
+        "human_review_required": True,
+        "reasons": ["accuracy_gate_not_evaluated"],
+    }
+
+
+def _default_delivery_status() -> Dict:
+    return {
+        "stage": "review_required",
+        "approved_for_client_delivery": False,
+        "reason": "accuracy_gate_not_evaluated",
+    }
+
+
 def build_record(
     *,
     audio_path: str,
@@ -543,6 +565,8 @@ def build_record(
         "input_alignment": input_alignment or {},
         "mono_mix": mono_mix or {},
         "transcript_candidates": list(transcript_candidates or []),
+        "consensus": {},
+        "accuracy_gate": _default_accuracy_gate(),
         "routing_decision": routing_decision or _default_routing_decision(),
         "timestamp_method": timestamp_method,
         "timestamp_confidence": round(float(timestamp_confidence), 4) if timestamp_confidence is not None else None,
@@ -550,6 +574,8 @@ def build_record(
         "tts_suitability": tts_suitability or {"eligible": False, "reasons": ["review_not_final"], "confidence": 0.2},
         "dataset_products": list(dataset_products or []),
         "premium_processing": premium_processing or _default_premium_processing(),
+        "delivery_status": _default_delivery_status(),
+        "review_artifacts": {},
     }
     record["dataset_purpose"] = infer_dataset_purpose(record)
 
