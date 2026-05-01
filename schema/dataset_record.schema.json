@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sonexis.local/schema/dataset_record.schema.json",
+  "title": "Sonexis dataset record",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "session_name",
+    "session_id",
+    "input_mode",
+    "transcript",
+    "metadata",
+    "validation",
+    "accuracy_gate",
+    "human_review",
+    "delivery_status"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string", "minLength": 1},
+    "session_name": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
+    "input_mode": {"type": "string", "minLength": 1},
+    "pipeline_mode": {"type": "string"},
+    "metadata": {"type": "object"},
+    "validation": {
+      "type": "object",
+      "required": ["passed"],
+      "additionalProperties": true,
+      "properties": {
+        "passed": {"type": "boolean"}
+      }
+    },
+    "accuracy_gate": {
+      "type": "object",
+      "required": ["passed", "human_review_required"],
+      "additionalProperties": true,
+      "properties": {
+        "target_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "estimated_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "target_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "estimated_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "target_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "estimated_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "target_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "estimated_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "estimated": {"type": "boolean"},
+        "verified_accuracy": {"type": "boolean"},
+        "passed": {"type": "boolean"},
+        "human_review_required": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "human_review": {
+      "type": "object",
+      "required": ["required", "status"],
+      "additionalProperties": true,
+      "properties": {
+        "required": {"type": "boolean"},
+        "status": {"type": "string"}
+      }
+    },
+    "delivery_status": {
+      "type": "object",
+      "required": ["stage", "approved_for_client_delivery"],
+      "additionalProperties": true,
+      "properties": {
+        "stage": {"enum": ["review_required", "reviewed", "approved", "rejected"]},
+        "approved_for_client_delivery": {"type": "boolean"},
+        "reason": {"type": ["string", "null"]}
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "required": ["raw", "segments"],
+      "additionalProperties": true,
+      "properties": {
+        "raw": {"type": "string"},
+        "normalised": {"type": "string"},
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["segment_id", "start", "end", "speaker_id", "text", "sample_rate"],
+            "additionalProperties": true,
+            "properties": {
+              "segment_id": {"type": "string", "minLength": 1},
+              "start": {"type": "number", "minimum": 0},
+              "end": {"type": "number"},
+              "duration": {"type": "number"},
+              "speaker_id": {"type": "string", "minLength": 1},
+              "text": {"type": "string"},
+              "text_normalized": {"type": "string"},
+              "language": {"type": "string"},
+              "sample_rate": {"type": "integer", "minimum": 1},
+              "missing_fields": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "transcript_candidates": {"type": "array"},
+    "consensus": {"type": "object"},
+    "review_artifacts": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "processing": {
+            "type": "object",
+            "properties": {
+              "pipeline_mode": {"const": "premium_accuracy"}
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "transcript_candidates",
+          "consensus",
+          "review_artifacts",
+          "accuracy_gate",
+          "delivery_status"
+        ]
+      }
+    }
+  ]
+}

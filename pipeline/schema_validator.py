@@ -8,7 +8,7 @@ from typing import Optional
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-_SCHEMA_PATH = Path(__file__).parent.parent / "schema" / "dataset_schema.json"
+_SCHEMA_PATH = Path(__file__).parent.parent / "schema" / "dataset_record.schema.json"
 _validator: Optional[Draft202012Validator] = None
 
 

@@ -17,7 +17,7 @@ def write_validation_report(report: Dict, output_dir: str, session_name: str = "
 
 def load_dataset_schema(schema_path: str | None = None) -> Dict:
     if schema_path is None:
-        schema_path = str(Path(__file__).resolve().parents[2] / "schema" / "dataset_schema.json")
+        schema_path = str(Path(__file__).resolve().parents[2] / "schema" / "dataset_record.schema.json")
     return json.loads(Path(schema_path).read_text(encoding="utf-8"))
 
 

@@ -193,7 +193,11 @@ class DatasetWriter:
     def _write_schema_once(self) -> None:
         schema_path = self.root / "schema.json"
         if not schema_path.exists():
-            _write_json(schema_path, _SCHEMA)
+            source = Path(__file__).resolve().parents[1] / "schema" / "dataset_record.schema.json"
+            if source.exists():
+                _write_json(schema_path, json.loads(source.read_text(encoding="utf-8")))
+            else:  # pragma: no cover - defensive fallback for packaged builds
+                _write_json(schema_path, _SCHEMA)
 
     # ── audio writing ──────────────────────────────────────────────────────
 
@@ -497,7 +501,9 @@ class DatasetWriter:
         segments = record.get("transcript", {}).get("segments", [])
         template_rows: List[Dict[str, Any]] = []
         gate_reasons = set(record.get("accuracy_gate", {}).get("reasons") or [])
-        for segment in segments:
+        for idx, segment in enumerate(segments, 1):
+            segment_id = segment.get("segment_id") or f"{session_name}_seg_{idx:05d}"
+            segment["segment_id"] = segment_id
             confidence = segment.get("confidence")
             if confidence is None:
                 confidence = segment.get("quality_score")
@@ -510,7 +516,7 @@ class DatasetWriter:
                 issue_types.extend(sorted(gate_reasons))
             needs_review = bool(record.get("human_review", {}).get("required") or issue_types)
             template_rows.append({
-                "segment_id": segment.get("segment_id"),
+                "segment_id": segment_id,
                 "speaker": segment.get("speaker_id"),
                 "start": segment.get("start"),
                 "end": segment.get("end"),
@@ -531,6 +537,13 @@ class DatasetWriter:
                 row for row in template_rows if row["needs_review"]
             ],
         })
+        for idx, entry in enumerate(record.get("conversation_transcript", []) or [], 1):
+            if not entry.get("segment_id"):
+                entry["segment_id"] = (
+                    segments[idx - 1].get("segment_id")
+                    if idx - 1 < len(segments)
+                    else f"{session_name}_seg_{idx:05d}"
+                )
         _write_json(template_path, template_rows)
         _write_json(final_path, {
             "status": "pending_human_review",
