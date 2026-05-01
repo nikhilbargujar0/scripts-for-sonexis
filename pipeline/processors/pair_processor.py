@@ -584,6 +584,8 @@ def process_speaker_pair(
     record["dataset_products"] = _dataset_products(cfg)
     record["premium_processing"] = premium_processing
     record["accuracy_gate"] = accuracy_gate
+    record["pipeline_mode"] = pipeline_mode
+    record["speaker_map"] = speaker_map
     if input_mode == "speaker_folders":
         record["metadata_json"] = metadata
         record["inferred_metadata"] = {

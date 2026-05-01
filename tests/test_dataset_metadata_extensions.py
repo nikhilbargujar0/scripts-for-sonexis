@@ -157,7 +157,7 @@ class DatasetMetadataExtensionTests(unittest.TestCase):
         self.assertIn("stt", record["dataset_purpose"]["primary"])
         self.assertIn("diarisation", record["dataset_purpose"]["primary"])
         self.assertIn("tts", record["dataset_purpose"]["not_recommended_for"])
-        self.assertEqual(record["quality_targets"]["word_accuracy_target"], 0.98)
+        self.assertEqual(record["quality_targets"]["word_accuracy_target"], 0.99)
         self.assertIsNone(record["quality_metrics"]["estimated_word_accuracy"])
         self.assertIn("human_review", record)
         self.assertIn("code_switch", record)

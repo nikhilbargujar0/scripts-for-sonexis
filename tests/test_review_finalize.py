@@ -5,16 +5,21 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from jsonschema.exceptions import ValidationError
+
 from pipeline.dataset_writer import DatasetWriter
+from pipeline.output_formatter import DATASET_SCHEMA_VERSION
 from pipeline.review.finalize import finalize_review
+from pipeline.schema_validator import validate_record
 
 
 def _record(*, validation_passed: bool = True) -> dict:
     return {
-        "schema_version": "1.0",
+        "schema_version": DATASET_SCHEMA_VERSION,
         "session_id": "conversation_0001",
         "session_name": "conversation_0001",
         "input_mode": "speaker_folders",
+        "pipeline_mode": "premium_accuracy",
         "metadata": {"speakers": {"SPEAKER_00": {}, "SPEAKER_01": {}}},
         "validation": {"passed": validation_passed, "issues": []},
         "accuracy_gate": {
@@ -90,6 +95,10 @@ def _review(*, status: str = "completed", blank: bool = False, shifted: bool = F
                 "asr_text": "hello world",
                 "reviewed_text": "" if blank else "hello world",
                 "language": "en-IN",
+                "review_reasons": [],
+                "resolved_issue_types": [],
+                "unresolved_issue_types": [],
+                "review_notes": "",
                 "issue_types": [],
                 "needs_review": False,
             },
@@ -101,6 +110,10 @@ def _review(*, status: str = "completed", blank: bool = False, shifted: bool = F
                 "asr_text": "reply",
                 "reviewed_text": "reply",
                 "language": "en-IN",
+                "review_reasons": [],
+                "resolved_issue_types": [],
+                "unresolved_issue_types": [],
+                "review_notes": "",
                 "issue_types": [],
                 "needs_review": False,
             },
@@ -118,17 +131,23 @@ class ReviewFinalizeTests(unittest.TestCase):
         rev.write_text(json.dumps(review), encoding="utf-8")
         return ann, rev
 
-    def test_completed_review_passes_and_updates_manifest(self) -> None:
+    def test_completed_review_passes_and_updates_transcript_side_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            ann, rev = self._write_inputs(root, _record(), _review())
+            review = _review()
+            review["segments"][0]["reviewed_text"] = "reviewed hello world"
+            ann, rev = self._write_inputs(root, _record(), review)
             summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
             updated = json.loads(ann.read_text(encoding="utf-8"))
             manifest = (root / "manifests" / "approved_for_delivery.jsonl").read_text(encoding="utf-8")
+            raw = (root / "transcripts" / "conversation_0001" / "raw.txt").read_text(encoding="utf-8")
+            combined = json.loads((root / "transcripts" / "conversation_0001" / "combined_conversation.json").read_text(encoding="utf-8"))
 
         self.assertTrue(summary["approved_for_client_delivery"])
         self.assertEqual(updated["delivery_status"]["stage"], "approved")
         self.assertEqual(updated["final_transcript_source"], "human_review")
+        self.assertIn("reviewed hello world", raw)
+        self.assertEqual(combined[0]["text"], "reviewed hello world")
         self.assertIn("conversation_0001", manifest)
 
     def test_missing_reviewed_text_fails_without_approval(self) -> None:
@@ -163,6 +182,71 @@ class ReviewFinalizeTests(unittest.TestCase):
 
         self.assertTrue(all(row["segment_id"] for row in rows))
         self.assertEqual(rows[0]["segment_id"], "conversation_0001_seg_00001")
+        self.assertIn("review_reasons", rows[0])
+        self.assertIn("unresolved_issue_types", rows[0])
+
+    def test_code_switch_review_reason_does_not_fail_if_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["language"] = "Hinglish"
+            review["segments"][0]["review_reasons"] = ["code_switch_detected"]
+            review["segments"][0]["unresolved_issue_types"] = []
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 0.99)
+        self.assertEqual(qa["unresolved_code_switch_count"], 0)
+
+    def test_unresolved_code_switch_issue_blocks_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["language"] = "Hinglish"
+            review["segments"][0]["unresolved_issue_types"] = ["code_switch"]
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("verified_code_switch_accuracy_below_target", summary["failure_reasons"])
+
+    def test_speaker_alias_spk1_is_normalised(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["speaker"] = "spk1"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(updated["transcript"]["segments"][0]["speaker_id"], "SPEAKER_00")
+
+    def test_second_pass_required_blocks_if_not_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["second_pass_review"] = {"required": True, "completed": False, "reviewer_id": None, "sample_rate": 0.0, "notes": ""}
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("second_pass_review_required_not_completed", summary["failure_reasons"])
+
+    def test_schema_premium_condition_uses_top_level_pipeline_mode(self) -> None:
+        premium = _record()
+        del premium["transcript_candidates"]
+        with self.assertRaises(ValidationError):
+            validate_record(premium)
+        offline = _record()
+        offline["pipeline_mode"] = "offline_standard"
+        offline.pop("transcript_candidates")
+        validate_record(offline)
+
+    def test_schema_version_consistent(self) -> None:
+        self.assertEqual(_record()["schema_version"], DATASET_SCHEMA_VERSION)
 
     def test_accuracy_below_target_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

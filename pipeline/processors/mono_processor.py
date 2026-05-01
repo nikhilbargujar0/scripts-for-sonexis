@@ -290,6 +290,7 @@ def process_single(
     record["tts_suitability"] = tts_suitability
     record["dataset_products"] = _dataset_products(cfg)
     record["premium_processing"] = premium_processing
+    record["pipeline_mode"] = pipeline_mode
     if transcript_candidates and bool(getattr(cfg, "store_transcript_candidates", True)):
         record["transcript_candidates"] = [
             candidate.to_dict(

@@ -25,12 +25,13 @@ See [OFFLINE_SETUP.md](OFFLINE_SETUP.md) for local model setup.
 
 ## Premium Review Workflow
 
-The premium path does not claim automatic 99% ASR accuracy. It creates a
-multi-engine ASR and consensus review package, then requires human QA before a
-record can be approved for client delivery. Estimated accuracy and verified
+The pipeline does not claim automatic 99% ASR accuracy. Premium workflow
+targets 99%+ reviewed delivery accuracy: multi-engine ASR plus consensus, then
+human QA and finalisation before client delivery. ASR-vs-review WER is reported
+separately from reviewed delivery confidence. Estimated accuracy and verified
 accuracy are stored separately.
 
-Generate a premium review package:
+Workflow A: generate a premium review package.
 
 ```bash
 python main.py \
@@ -54,8 +55,10 @@ This writes:
 - `review/conversation_0001/final_reviewed_transcript.json`
 - `review/conversation_0001/qa_report.json`
 
-After a reviewer completes `final_reviewed_transcript.json`, finalise the
-record:
+Workflow B: human reviewer edits `final_reviewed_transcript.json`, filling
+`reviewed_text` and any `unresolved_issue_types`.
+
+Workflow C: finalise reviewed transcript.
 
 ```bash
 python review_finalize.py \

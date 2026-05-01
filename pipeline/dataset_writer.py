@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import shutil
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -139,6 +140,11 @@ def _write_wav(path: Path, wav: np.ndarray, sample_rate: int) -> None:
             logging.getLogger(__name__).warning(
                 "soundfile and scipy unavailable — WAV not written to %s", path
             )
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    return safe.strip("._") or "speaker"
 
 
 # ── DatasetWriter ────────────────────────────────────────────────────────────
@@ -338,7 +344,7 @@ class DatasetWriter:
         if speaker_transcripts:
             for spk_id, text in speaker_transcripts.items():
                 label = (speaker_map or {}).get(spk_id, spk_id)
-                fname = f"speaker_{label.lower().replace(' ', '_')}.json"
+                fname = f"speaker_{_safe_filename(spk_id)}.json"
                 _write_json(out_dir / fname, {"speaker": spk_id, "label": label, "text": text})
 
     # ── annotation writing ─────────────────────────────────────────────────
@@ -504,6 +510,8 @@ class DatasetWriter:
         for idx, segment in enumerate(segments, 1):
             segment_id = segment.get("segment_id") or f"{session_name}_seg_{idx:05d}"
             segment["segment_id"] = segment_id
+            if idx - 1 < len(record.get("conversation_transcript", []) or []):
+                record["conversation_transcript"][idx - 1]["segment_id"] = segment_id
             confidence = segment.get("confidence")
             if confidence is None:
                 confidence = segment.get("quality_score")
@@ -514,7 +522,19 @@ class DatasetWriter:
                 issue_types.append("code_switch")
             if gate_reasons:
                 issue_types.extend(sorted(gate_reasons))
+            if confidence is not None and float(confidence or 0.0) < 0.75:
+                issue_types.append("low_confidence")
             needs_review = bool(record.get("human_review", {}).get("required") or issue_types)
+            review_reasons = []
+            for reason in issue_types:
+                if reason == "overlap":
+                    review_reasons.append("overlap_detected")
+                elif reason == "code_switch":
+                    review_reasons.append("code_switch_detected")
+                elif reason == "low_confidence":
+                    review_reasons.append("low_confidence")
+                else:
+                    review_reasons.append(f"accuracy_gate_reason:{reason}")
             template_rows.append({
                 "segment_id": segment_id,
                 "speaker": segment.get("speaker_id"),
@@ -524,6 +544,10 @@ class DatasetWriter:
                 "reviewed_text": "",
                 "language": segment.get("language"),
                 "confidence": confidence,
+                "review_reasons": list(dict.fromkeys(review_reasons)),
+                "resolved_issue_types": [],
+                "unresolved_issue_types": [],
+                "review_notes": "",
                 "issue_types": list(dict.fromkeys(issue_types)),
                 "needs_review": needs_review,
             })
@@ -548,6 +572,13 @@ class DatasetWriter:
         _write_json(final_path, {
             "status": "pending_human_review",
             "canonical_after_review": True,
+            "second_pass_review": {
+                "required": False,
+                "completed": False,
+                "reviewer_id": None,
+                "sample_rate": 0.0,
+                "notes": "",
+            },
             "segments": template_rows,
         })
         _write_json(qa_path, {

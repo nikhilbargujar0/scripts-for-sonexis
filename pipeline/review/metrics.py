@@ -102,19 +102,30 @@ def timestamp_accuracy(reviewed_segments, original_segments) -> float:
 
 
 def code_switch_review_pass_rate(reviewed_segments) -> float:
+    stats = code_switch_review_stats(reviewed_segments)
+    return float(stats["accuracy"])
+
+
+def code_switch_review_stats(reviewed_segments) -> Dict[str, float | int]:
     relevant = 0
-    passed = 0
+    unresolved_count = 0
     unresolved = {"code_switch", "language_uncertain", "unresolved"}
     for seg in reviewed_segments:
-        issues = {str(issue) for issue in (seg.get("issue_types") or [])}
-        is_code_switch = bool(issues & unresolved) or str(seg.get("language") or "").lower() in {
+        unresolved_issues = {str(issue) for issue in (seg.get("unresolved_issue_types") or [])}
+        # Legacy `issue_types` means "review reasons"; it is not unresolved QA.
+        is_code_switch = bool(unresolved_issues & unresolved) or str(seg.get("language") or "").lower() in {
             "hinglish", "code-switch", "code_switch", "mixed"
-        }
+        } or "code_switch_detected" in {str(issue) for issue in (seg.get("review_reasons") or [])}
         if not is_code_switch:
             continue
         relevant += 1
-        if not (issues & unresolved):
-            passed += 1
+        if unresolved_issues & unresolved:
+            unresolved_count += 1
     if relevant == 0:
-        return 0.99
-    return round(0.99 * (passed / relevant), 4)
+        return {"accuracy": 0.99, "code_switch_segment_count": 0, "unresolved_code_switch_count": 0}
+    passed = relevant - unresolved_count
+    return {
+        "accuracy": round(0.99 * (passed / relevant), 4),
+        "code_switch_segment_count": relevant,
+        "unresolved_code_switch_count": unresolved_count,
+    }

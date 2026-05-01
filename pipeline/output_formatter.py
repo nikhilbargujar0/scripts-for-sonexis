@@ -28,7 +28,7 @@ from .utils.dataset_purpose import infer_dataset_purpose
 
 SCHEMA_VERSION = "3.0.0"
 PIPELINE_VERSION = "1.0.0"
-DATASET_SCHEMA_VERSION = "1.0"
+DATASET_SCHEMA_VERSION = "3.0.0"
 
 _LANG_TO_BCP47: Dict[str, str] = {
     "hi": "hi-Deva",
@@ -445,6 +445,7 @@ def build_record(
 
     language_meta = _language_aliases(language)
     cfg_dict = cfg.to_dict() if cfg is not None and hasattr(cfg, "to_dict") else {}
+    pipeline_mode = str(cfg_dict.get("pipeline_mode") or (processing or {}).get("pipeline_mode") or "offline_standard")
     session_id = session_name or os.path.splitext(os.path.basename(audio_path))[0]
     sample_rate = int(audio_meta.get("processed_sample_rate_hz") or audio_meta.get("sample_rate_hz") or 16000)
     effective_model_versions = model_versions or _collect_model_versions(cfg_dict)
@@ -476,6 +477,7 @@ def build_record(
         "pipeline_version": PIPELINE_VERSION,
         "generated_at": generated_at or "1970-01-01T00:00:00+00:00",
         "input_mode": input_mode,
+        "pipeline_mode": pipeline_mode,
         "session_id": session_id,
         "session_name": session_id,
         "model_versions": effective_model_versions,
@@ -548,9 +550,10 @@ def build_record(
         "quality": quality or {},
         "annotations": annotations,
         "quality_targets": quality_targets or {
-            "word_accuracy_target": 0.98,
+            "word_accuracy_target": 0.99,
+            "speaker_accuracy_target": 0.99,
             "timestamp_accuracy_target": 0.98,
-            "code_switch_accuracy_target": 0.98,
+            "code_switch_accuracy_target": 0.99,
             "human_review_required": True,
         },
         "quality_metrics": quality_metrics or _default_quality_metrics(),

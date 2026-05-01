@@ -229,7 +229,8 @@ def process_conversation(
 
 def write_example_output(path: str) -> None:
     example = {
-        "schema_version": "3.0",
+        "schema_version": "3.0.0",
+        "pipeline_mode": "offline_standard",
         "generated_at": "1970-01-01T00:00:00+00:00",
         "input_mode": "speaker_pair",
         "session_name": "conversation_0001",

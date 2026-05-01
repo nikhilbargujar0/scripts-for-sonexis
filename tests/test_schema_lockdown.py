@@ -140,9 +140,9 @@ class TestMissingFieldsList(unittest.TestCase):
 class TestSchemaVersion(unittest.TestCase):
     def test_schema_version_and_mismatch(self):
         record = _make_record()
-        self.assertEqual(DATASET_SCHEMA_VERSION, "1.0")
+        self.assertEqual(DATASET_SCHEMA_VERSION, "3.0.0")
         self.assertEqual(SCHEMA_VERSION, "3.0.0")
-        self.assertEqual(record["schema_version"], "1.0")
+        self.assertEqual(record["schema_version"], "3.0.0")
         self.assertEqual(record["pipeline_record_version"], "3.0.0")
 
         bad = copy.deepcopy(record)
@@ -150,7 +150,7 @@ class TestSchemaVersion(unittest.TestCase):
         with self.assertRaises(SchemaVersionError) as ctx:
             validate_record(bad)
         self.assertIn("99.0", str(ctx.exception))
-        self.assertIn("1.0", str(ctx.exception))
+        self.assertIn("3.0.0", str(ctx.exception))
 
 
 class TestSchemaValidationGate(unittest.TestCase):

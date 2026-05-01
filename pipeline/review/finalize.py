@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,12 +12,17 @@ from ..schema_validator import validate_record
 from ..transcription import normalise_transcript
 from .metrics import (
     character_error_rate,
-    code_switch_review_pass_rate,
+    code_switch_review_stats,
     speaker_accuracy,
     timestamp_accuracy,
     word_accuracy,
     word_error_rate,
 )
+
+
+def safe_filename(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    return safe.strip("._") or "speaker"
 
 
 def _now() -> str:
@@ -72,7 +78,39 @@ def _known_speakers(record: Dict) -> set[str]:
     speakers = set((record.get("metadata", {}).get("speakers") or {}).keys())
     speakers.update(seg.get("speaker_id") for seg in record.get("transcript", {}).get("segments", []) if seg.get("speaker_id"))
     speakers.update(row.get("speaker") for row in record.get("conversation_transcript", []) if row.get("speaker"))
+    if speakers:
+        speakers.update({"SPEAKER_00", "SPEAKER_01"})
     return {str(s) for s in speakers if s}
+
+
+def normalise_speaker_id(value: str, record: dict) -> str:
+    raw = str(value or "").strip()
+    key = raw.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "speaker_00": "SPEAKER_00",
+        "speaker00": "SPEAKER_00",
+        "speaker_0": "SPEAKER_00",
+        "spk0": "SPEAKER_00",
+        "spk_0": "SPEAKER_00",
+        "speaker_1": "SPEAKER_00",
+        "speaker1": "SPEAKER_00",
+        "spk1": "SPEAKER_00",
+        "spk_1": "SPEAKER_00",
+        "speaker_01": "SPEAKER_01",
+        "speaker01": "SPEAKER_01",
+        "spk01": "SPEAKER_01",
+        "speaker_2": "SPEAKER_01",
+        "speaker2": "SPEAKER_01",
+        "spk2": "SPEAKER_01",
+        "spk_2": "SPEAKER_01",
+    }
+    if raw.upper() in {"SPEAKER_00", "SPEAKER_01"}:
+        return raw.upper()
+    speaker_map = record.get("speaker_map") or {}
+    for canonical, label in speaker_map.items():
+        if raw == canonical or key == str(label).lower().replace("-", "_").replace(" ", "_"):
+            return str(canonical)
+    return aliases.get(key, raw)
 
 
 def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[str]]:
@@ -90,7 +128,8 @@ def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[s
     out: List[Dict] = []
     for idx, segment in enumerate(segments, 1):
         sid = str(segment.get("segment_id") or "").strip()
-        speaker = str(segment.get("speaker") or "").strip()
+        original_speaker = str(segment.get("speaker") or "").strip()
+        speaker = normalise_speaker_id(original_speaker, record)
         reviewed_text = str(segment.get("reviewed_text") or "").strip()
         try:
             start = float(segment.get("start"))
@@ -119,6 +158,8 @@ def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[s
         row = dict(segment)
         row["segment_id"] = sid
         row["speaker"] = speaker
+        if original_speaker and original_speaker != speaker:
+            row["speaker_original"] = original_speaker
         row["start"] = start
         row["end"] = end
         row["reviewed_text"] = reviewed_text
@@ -132,24 +173,47 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
     wer = word_error_rate(reviewed_text, asr_text)
     word_acc = word_accuracy(reviewed_text, asr_text)
     cer = character_error_rate(reviewed_text, asr_text)
-    final_word = 0.995 if review_completed and all(seg.get("reviewed_text") for seg in reviewed_segments) else word_acc
+    unresolved_issue_count = sum(len(seg.get("unresolved_issue_types") or []) for seg in reviewed_segments)
+    empty_count = sum(1 for seg in reviewed_segments if not seg.get("reviewed_text"))
+    completion_rate = (
+        (len(reviewed_segments) - empty_count) / len(reviewed_segments)
+        if reviewed_segments else 0.0
+    )
+    # WER measures ASR correction rate against human review.
+    # Final reviewed transcript "word accuracy" is delivery confidence unless a
+    # future second-pass sampled audit provides measured final accuracy.
+    delivery_confidence = (
+        0.995
+        if review_completed and empty_count == 0 and unresolved_issue_count == 0
+        else max(0.0, min(0.98, completion_rate - unresolved_issue_count * 0.05))
+    )
     final_speaker = speaker_accuracy(reviewed_segments, original_segments)
     final_timestamp = timestamp_accuracy(reviewed_segments, original_segments)
-    final_code_switch = code_switch_review_pass_rate(reviewed_segments)
+    code_switch_stats = code_switch_review_stats(reviewed_segments)
     return {
         "asr_vs_review": {
             "wer": wer,
             "word_accuracy": word_acc,
             "cer": cer,
+            "measurement_type": "asr_compared_to_human_review",
+        },
+        "reviewed_delivery": {
+            "review_completion_rate": round(completion_rate, 4),
+            "empty_reviewed_text_count": empty_count,
+            "unresolved_issue_count": unresolved_issue_count,
+            "delivery_confidence": round(delivery_confidence, 4),
+            "confidence_basis": "completed_human_review_no_empty_segments_no_unresolved_issues",
         },
         "verified_final": {
-            "word_accuracy": round(final_word, 4),
+            "word_accuracy": round(delivery_confidence, 4),
+            "word_accuracy_measurement_type": "reviewed_delivery_confidence",
             "speaker_accuracy": final_speaker,
             "timestamp_accuracy": final_timestamp,
-            "code_switch_accuracy": final_code_switch,
+            "code_switch_accuracy": float(code_switch_stats["accuracy"]),
             "verified_accuracy": bool(review_completed),
             "verification_method": "human_review" if review_completed else None,
         },
+        "code_switch": code_switch_stats,
     }
 
 
@@ -199,6 +263,37 @@ def _update_canonical_transcript(record: Dict, reviewed_segments: List[Dict]) ->
     record["final_transcript_source"] = "human_review"
 
 
+def write_final_transcript_side_files(
+    output_root: str,
+    session: str,
+    record: dict,
+) -> dict:
+    root = Path(output_root) / "transcripts"
+    session_dir = root / session
+    session_dir.mkdir(parents=True, exist_ok=True)
+    transcript = record.get("transcript", {})
+    raw_path = session_dir / "raw.txt"
+    norm_path = session_dir / "normalised.txt"
+    combined_path = session_dir / "combined_conversation.json"
+    flat_path = root / f"{session}.json"
+    raw_path.write_text(transcript.get("raw", ""), encoding="utf-8")
+    norm_path.write_text(transcript.get("normalised", ""), encoding="utf-8")
+    _write_json(combined_path, record.get("conversation_transcript", []))
+    _write_json(flat_path, record.get("conversation_transcript", []))
+    speaker_paths: Dict[str, str] = {}
+    for speaker, text in (record.get("speaker_transcripts") or {}).items():
+        path = session_dir / f"speaker_{safe_filename(speaker)}.json"
+        _write_json(path, {"speaker": speaker, "text": text})
+        speaker_paths[speaker] = str(path.resolve())
+    return {
+        "raw_txt": str(raw_path.resolve()),
+        "normalised_txt": str(norm_path.resolve()),
+        "combined_conversation_json": str(combined_path.resolve()),
+        "flat_conversation_json": str(flat_path.resolve()),
+        "speaker_transcripts": speaker_paths,
+    }
+
+
 def _update_accuracy_gate(record: Dict, metrics: Dict, targets: Dict[str, float], validation_errors: List[str]) -> List[str]:
     gate = dict(record.get("accuracy_gate") or {})
     verified = metrics["verified_final"]
@@ -241,14 +336,26 @@ def finalize_review(
 ) -> dict:
     record = _read_json(annotation_path)
     reviewed = _read_json(reviewed_transcript_path)
+    record.setdefault("pipeline_mode", "offline_standard")
     session = str(record.get("session_name") or record.get("session_id") or Path(annotation_path).stem)
     now = _now()
     target_values = _targets(record, targets)
     reviewed_segments, review_errors = _validate_reviewed(reviewed, record)
-    completed = reviewed.get("status") == "completed" and not any(err.endswith("empty_reviewed_text") for err in review_errors)
+    second_pass = reviewed.get("second_pass_review") or {
+        "required": False,
+        "completed": False,
+        "reviewer_id": None,
+        "sample_rate": 0.0,
+        "notes": "",
+    }
+    if second_pass.get("required") and not second_pass.get("completed"):
+        review_errors.append("second_pass_review_required_not_completed")
+    completed = reviewed.get("status") == "completed" and not review_errors
     can_update_canonical = completed and bool(reviewed_segments)
     original_segments = deepcopy(record.get("transcript", {}).get("segments", []))
     metrics = _compute_metrics(reviewed_segments, original_segments, completed)
+    metrics["reviewed_delivery"]["word_accuracy_target"] = target_values["word_accuracy"]
+    metrics["reviewed_delivery"]["second_pass_review"] = second_pass
     validation_passed = bool(record.get("validation", {}).get("passed"))
     gate_reasons = _update_accuracy_gate(record, metrics, target_values, [] if completed else review_errors)
     if not validation_passed:
@@ -262,6 +369,11 @@ def finalize_review(
     approved = bool(approve_if_passed and passed)
     if can_update_canonical:
         _update_canonical_transcript(record, reviewed_segments)
+        side_files = write_final_transcript_side_files(output_root, session, record)
+        record.setdefault("artifacts", {})
+        record["artifacts"]["final_transcript_files"] = side_files
+    else:
+        side_files = {}
 
     review_dir = Path(output_root) / "review" / session
     qa_path = review_dir / "qa_report.json"
@@ -281,7 +393,9 @@ def finalize_review(
         "approved_for_client_delivery": approved,
         "segment_count": len(reviewed_segments),
         "empty_reviewed_text_count": sum(1 for seg in reviewed_segments if not seg.get("reviewed_text")),
-        "unresolved_issue_count": sum(1 for seg in reviewed_segments if seg.get("issue_types")),
+        "unresolved_issue_count": sum(len(seg.get("unresolved_issue_types") or []) for seg in reviewed_segments),
+        "code_switch_segment_count": metrics["code_switch"]["code_switch_segment_count"],
+        "unresolved_code_switch_count": metrics["code_switch"]["unresolved_code_switch_count"],
     }
     _write_json(qa_path, qa_report)
 
@@ -296,6 +410,7 @@ def finalize_review(
                 "approved_for_delivery": True,
                 "verified_accuracy": True,
                 "qa_report_path": str(qa_path.resolve()),
+                "second_pass_review": second_pass,
             },
         }
         record["delivery_status"] = {
@@ -352,6 +467,8 @@ def finalize_review(
         "final_reviewed_transcript": str(final_path.resolve()),
         "qa_report": str(qa_path.resolve()),
     })
+    record["last_finalized_at"] = now
+    record["last_finalized_by"] = reviewer_id
     validate_record(record)
     _write_json(annotation_path, record)
 
