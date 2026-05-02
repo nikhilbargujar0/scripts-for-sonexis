@@ -370,6 +370,12 @@ def _default_accuracy_gate() -> Dict:
         "human_review_required": True,
         "human_review_completed": False,
         "human_review_required_for_delivery": True,
+        "word_accuracy_basis": "reviewed_delivery_confidence",
+        "asr_accuracy_basis": "asr_vs_review_only_not_delivery_claim",
+        "reviewed_delivery_target_met": False,
+        "measured_word_accuracy_available": False,
+        "measured_word_accuracy": None,
+        "reviewed_delivery_confidence": None,
         "reasons": ["accuracy_gate_not_evaluated"],
     }
 

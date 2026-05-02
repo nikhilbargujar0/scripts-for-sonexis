@@ -80,6 +80,22 @@
         "human_review_required": {"type": "boolean"},
         "human_review_completed": {"type": "boolean"},
         "human_review_required_for_delivery": {"type": "boolean"},
+        "word_accuracy_basis": {"type": "string"},
+        "asr_accuracy_basis": {"type": "string"},
+        "reviewed_delivery_target_met": {"type": "boolean"},
+        "measured_word_accuracy_available": {"type": "boolean"},
+        "measured_word_accuracy": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
+        "reviewed_delivery_confidence": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
         "reasons": {"type": "array", "items": {"type": "string"}}
       }
     },

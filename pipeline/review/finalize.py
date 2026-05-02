@@ -85,6 +85,7 @@ def sync_status_manifests(manifests_dir: str | Path, session: str, row: Dict, st
     status_files = {
         "approved": "approved_for_delivery.jsonl",
         "review_required": "review_required.jsonl",
+        "reviewed": "review_required.jsonl",
         "rejected": "rejected.jsonl",
     }
     for filename in status_files.values():
@@ -250,6 +251,37 @@ def _validate_reviewed(reviewed: Dict, record: Dict) -> Tuple[List[Dict], List[s
     return out, errors
 
 
+def _validate_second_pass(second_pass: Dict) -> List[str]:
+    errors: List[str] = []
+    if not second_pass.get("required"):
+        return errors
+
+    if not second_pass.get("completed"):
+        errors.append("second_pass_review_required_not_completed")
+        return errors
+
+    if not str(second_pass.get("reviewer_id") or "").strip():
+        errors.append("second_pass_reviewer_id_missing")
+
+    try:
+        sample_rate = float(second_pass.get("sample_rate") or 0.0)
+    except (TypeError, ValueError):
+        sample_rate = 0.0
+    if sample_rate <= 0.0:
+        errors.append("second_pass_sample_rate_missing")
+
+    if "agreement_score" in second_pass and second_pass.get("agreement_score") is not None:
+        try:
+            agreement = float(second_pass.get("agreement_score"))
+        except (TypeError, ValueError):
+            errors.append("second_pass_agreement_score_invalid")
+        else:
+            if agreement < 0.0 or agreement > 1.0:
+                errors.append("second_pass_agreement_score_invalid")
+
+    return errors
+
+
 def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict], review_completed: bool) -> Dict:
     reviewed_text = " ".join(seg.get("reviewed_text", "") for seg in reviewed_segments)
     asr_text = " ".join(seg.get("asr_text", "") for seg in reviewed_segments)
@@ -295,6 +327,9 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
         "verified_final": {
             "word_accuracy": round(delivery_confidence, 4),
             "word_accuracy_measurement_type": "reviewed_delivery_confidence",
+            "reviewed_delivery_confidence": round(delivery_confidence, 4),
+            "measured_word_accuracy": None,
+            "measured_word_accuracy_available": False,
             "speaker_accuracy": final_speaker,
             "timestamp_accuracy": final_timestamp,
             "timestamp_accuracy_measurement_type": "reviewed_vs_original_timestamps",
@@ -430,6 +465,9 @@ def _update_accuracy_gate(record: Dict, metrics: Dict, targets: Dict[str, float]
         "word_accuracy_basis": "reviewed_delivery_confidence",
         "asr_accuracy_basis": "asr_vs_review_only_not_delivery_claim",
         "reviewed_delivery_target_met": not reasons,
+        "measured_word_accuracy_available": False,
+        "measured_word_accuracy": None,
+        "reviewed_delivery_confidence": verified.get("reviewed_delivery_confidence", verified["word_accuracy"]),
         "reasons": list(dict.fromkeys(reasons)),
     })
     record["accuracy_gate"] = gate
@@ -452,6 +490,10 @@ def finalize_review(
     now = _now()
     target_values = _targets(candidate, targets)
     reviewed_segments, review_errors = _validate_reviewed(reviewed, candidate)
+    reviewed_reviewer_id = str(reviewed.get("reviewer_id") or "").strip()
+    cli_reviewer_id = str(reviewer_id or "").strip()
+    if reviewed_reviewer_id and reviewed_reviewer_id != cli_reviewer_id:
+        review_errors.append("reviewer_id_mismatch")
     second_pass = reviewed.get("second_pass_review") or {
         "required": False,
         "completed": False,
@@ -462,8 +504,7 @@ def finalize_review(
     second_pass = dict(second_pass)
     if _second_pass_required(candidate, reviewed):
         second_pass["required"] = True
-    if second_pass.get("required") and not second_pass.get("completed"):
-        review_errors.append("second_pass_review_required_not_completed")
+    review_errors.extend(_validate_second_pass(second_pass))
     completed = reviewed.get("status") == "completed" and not review_errors
     can_update_canonical = completed and bool(reviewed_segments)
     comparison_source_type = _comparison_source_type(candidate)
@@ -490,6 +531,18 @@ def finalize_review(
 
     passed = bool(completed and validation_passed and candidate["accuracy_gate"]["passed"])
     approved = bool(approve_if_passed and passed)
+    if passed:
+        reviewed_delivery_accuracy_claim = "target_met_after_human_review"
+        client_safe_accuracy_statement = (
+            "Reviewed transcript met the target delivery accuracy gate after human QA. "
+            "ASR accuracy is reported separately as ASR-vs-review WER/CER."
+        )
+    else:
+        reviewed_delivery_accuracy_claim = "target_not_met_after_human_review"
+        client_safe_accuracy_statement = (
+            "Reviewed transcript has not met the target delivery accuracy gate. "
+            "ASR accuracy is reported separately as ASR-vs-review WER/CER."
+        )
     if can_update_canonical:
         _update_canonical_transcript(candidate, reviewed_segments)
         side_files = build_final_transcript_side_file_paths(output_root, session, candidate)
@@ -512,11 +565,8 @@ def finalize_review(
         **metrics,
         "target_reviewed_delivery_accuracy": target_values["word_accuracy"],
         "reviewed_delivery_target_met": passed,
-        "reviewed_delivery_accuracy_claim": "target_met_after_human_review",
-        "client_safe_accuracy_statement": (
-            "Reviewed transcript met the target delivery accuracy gate after human QA. "
-            "ASR accuracy is reported separately as ASR-vs-review WER/CER."
-        ),
+        "reviewed_delivery_accuracy_claim": reviewed_delivery_accuracy_claim,
+        "client_safe_accuracy_statement": client_safe_accuracy_statement,
         "passed": passed,
         "failure_reasons": failure_reasons,
         "validation_passed": validation_passed,
@@ -549,6 +599,27 @@ def finalize_review(
             "approved_at": now,
             "reason": "",
         }
+    elif passed:
+        candidate["human_review"] = {
+            "required": True,
+            "status": "completed",
+            "review_stage": "final_qa",
+            "reviewer_id": reviewer_id,
+            "completed_at": now,
+            "result": {
+                "approved_for_delivery": False,
+                "verified_accuracy": True,
+                "qa_report_path": str(qa_path.resolve()),
+                "second_pass_review": second_pass,
+            },
+        }
+        candidate["delivery_status"] = {
+            "stage": "reviewed",
+            "approved_for_client_delivery": False,
+            "approved_by": None,
+            "approved_at": None,
+            "reason": "manual_approval_withheld",
+        }
     elif not completed and not approve_if_passed:
         candidate.setdefault("human_review", {})
         candidate["human_review"].update({
@@ -561,6 +632,7 @@ def finalize_review(
                 "approved_for_delivery": False,
                 "verified_accuracy": False,
                 "failure_reasons": failure_reasons,
+                "second_pass_review": second_pass,
             },
         })
         candidate["delivery_status"] = {
@@ -581,6 +653,7 @@ def finalize_review(
                 "approved_for_delivery": False,
                 "verified_accuracy": False,
                 "failure_reasons": failure_reasons,
+                "second_pass_review": second_pass,
             },
         }
         candidate["delivery_status"] = {

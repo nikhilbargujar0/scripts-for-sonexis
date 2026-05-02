@@ -169,9 +169,15 @@ class ReviewFinalizeTests(unittest.TestCase):
             ann, rev = self._write_inputs(root, _record(), _review(blank=True))
             summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001", approve_if_passed=False)
             updated = json.loads(ann.read_text(encoding="utf-8"))
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
 
         self.assertFalse(summary["approved_for_client_delivery"])
         self.assertEqual(updated["delivery_status"]["stage"], "review_required")
+        self.assertFalse(qa["passed"])
+        self.assertFalse(qa["approved_for_client_delivery"])
+        self.assertFalse(qa["reviewed_delivery_target_met"])
+        self.assertEqual(qa["reviewed_delivery_accuracy_claim"], "target_not_met_after_human_review")
+        self.assertIn("has not met the target", qa["client_safe_accuracy_statement"])
 
     def test_validation_failed_blocks_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -311,6 +317,41 @@ class ReviewFinalizeTests(unittest.TestCase):
 
         self.assertFalse(summary["approved_for_client_delivery"])
         self.assertIn("second_pass_review_required_not_completed", summary["failure_reasons"])
+
+    def test_required_second_pass_completed_flag_only_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = _record()
+            record["delivery_policy"] = {"second_pass_required": True}
+            review = _review()
+            review["second_pass_review"] = {"required": True, "completed": True}
+            ann, rev = self._write_inputs(root, record, review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("second_pass_reviewer_id_missing", summary["failure_reasons"])
+        self.assertIn("second_pass_sample_rate_missing", summary["failure_reasons"])
+
+    def test_required_second_pass_rejects_invalid_agreement_score(self) -> None:
+        for agreement_score in (1.5, "bad"):
+            with self.subTest(agreement_score=agreement_score):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    record = _record()
+                    record["delivery_policy"] = {"second_pass_required": True}
+                    review = _review()
+                    review["second_pass_review"] = {
+                        "required": True,
+                        "completed": True,
+                        "reviewer_id": "reviewer_002",
+                        "sample_rate": 0.1,
+                        "agreement_score": agreement_score,
+                    }
+                    ann, rev = self._write_inputs(root, record, review)
+                    summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+                self.assertFalse(summary["approved_for_client_delivery"])
+                self.assertIn("second_pass_agreement_score_invalid", summary["failure_reasons"])
 
     def test_schema_premium_condition_uses_top_level_pipeline_mode(self) -> None:
         premium = _record()
@@ -648,6 +689,42 @@ class ReviewFinalizeTests(unittest.TestCase):
         self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["agreement_score"], 1.0)
         self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["notes"], "sample passed")
 
+    def test_reviewer_id_mismatch_blocks_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["reviewer_id"] = "reviewer_999"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("reviewer_id_mismatch", summary["failure_reasons"])
+
+    def test_reviewer_id_match_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["reviewer_id"] = "reviewer_001"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+
+    def test_passed_review_without_auto_approval_is_reviewed_not_approved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001", approve_if_passed=False)
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["passed"])
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertEqual(updated["delivery_status"]["stage"], "reviewed")
+        self.assertFalse(updated["delivery_status"]["approved_for_client_delivery"])
+        self.assertTrue(qa["reviewed_delivery_target_met"])
+        self.assertFalse(qa["approved_for_client_delivery"])
+
     def test_qa_report_uses_client_safe_accuracy_statement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -662,11 +739,37 @@ class ReviewFinalizeTests(unittest.TestCase):
         )
         self.assertFalse(qa["reviewed_delivery"]["measured_final_word_accuracy_available"])
         self.assertIn("client_safe_accuracy_statement", qa)
+        self.assertTrue(qa["passed"])
+        self.assertTrue(qa["approved_for_client_delivery"])
+        self.assertTrue(qa["reviewed_delivery_target_met"])
+        self.assertEqual(qa["reviewed_delivery_accuracy_claim"], "target_met_after_human_review")
+        self.assertIn("met the target delivery accuracy gate", qa["client_safe_accuracy_statement"])
         self.assertEqual(qa["asr_vs_review"]["measurement_type"], "asr_compared_to_human_review")
         self.assertEqual(
             qa["verified_final"]["word_accuracy_measurement_type"],
             "reviewed_delivery_confidence",
         )
+        self.assertEqual(
+            qa["verified_final"]["reviewed_delivery_confidence"],
+            qa["verified_final"]["word_accuracy"],
+        )
+        self.assertIsNone(qa["verified_final"]["measured_word_accuracy"])
+        self.assertFalse(qa["verified_final"]["measured_word_accuracy_available"])
+
+    def test_accuracy_gate_has_explicit_basis_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        gate = updated["accuracy_gate"]
+        self.assertEqual(gate["word_accuracy_basis"], "reviewed_delivery_confidence")
+        self.assertEqual(gate["asr_accuracy_basis"], "asr_vs_review_only_not_delivery_claim")
+        self.assertTrue(gate["reviewed_delivery_target_met"])
+        self.assertFalse(gate["measured_word_accuracy_available"])
+        self.assertIsNone(gate["measured_word_accuracy"])
+        self.assertIsNotNone(gate["reviewed_delivery_confidence"])
 
     def test_asr_wer_does_not_control_delivery_approval_after_human_qa(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -682,6 +785,38 @@ class ReviewFinalizeTests(unittest.TestCase):
         self.assertGreater(qa["asr_vs_review"]["wer"], 0.5)
         self.assertEqual(qa["asr_vs_review"]["measurement_type"], "asr_compared_to_human_review")
         self.assertTrue(qa["approved_for_client_delivery"])
+
+    def test_schema_validates_new_default_gate_fields(self) -> None:
+        gate = _default_accuracy_gate()
+        for field in (
+            "word_accuracy_basis",
+            "asr_accuracy_basis",
+            "reviewed_delivery_target_met",
+            "measured_word_accuracy_available",
+            "measured_word_accuracy",
+            "reviewed_delivery_confidence",
+        ):
+            self.assertIn(field, gate)
+
+        record = _record()
+        record["accuracy_gate"] = gate
+        validate_record(record)
+
+    def test_schema_rejects_invalid_new_accuracy_gate_fields(self) -> None:
+        invalid_measured = _record()
+        invalid_measured["accuracy_gate"]["measured_word_accuracy"] = 1.5
+        with self.assertRaises(ValidationError):
+            validate_record(invalid_measured)
+
+        invalid_confidence = _record()
+        invalid_confidence["accuracy_gate"]["reviewed_delivery_confidence"] = -0.1
+        with self.assertRaises(ValidationError):
+            validate_record(invalid_confidence)
+
+        invalid_target_met = _record()
+        invalid_target_met["accuracy_gate"]["reviewed_delivery_target_met"] = "yes"
+        with self.assertRaises(ValidationError):
+            validate_record(invalid_target_met)
 
 
 if __name__ == "__main__":  # pragma: no cover
