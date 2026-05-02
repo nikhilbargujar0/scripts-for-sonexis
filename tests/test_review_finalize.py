@@ -217,7 +217,7 @@ class ReviewFinalizeTests(unittest.TestCase):
             qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
 
         self.assertTrue(summary["approved_for_client_delivery"])
-        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 0.99)
+        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 1.0)
         self.assertEqual(qa["unresolved_code_switch_count"], 0)
 
     def test_unresolved_code_switch_issue_blocks_approval(self) -> None:
@@ -244,7 +244,7 @@ class ReviewFinalizeTests(unittest.TestCase):
             qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
 
         self.assertTrue(summary["approved_for_client_delivery"])
-        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 0.99)
+        self.assertEqual(qa["verified_final"]["code_switch_accuracy"], 1.0)
 
     def test_speaker_alias_spk1_is_normalised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

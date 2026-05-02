@@ -13,7 +13,6 @@ Integrates with PipelineConfig thresholds.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -74,14 +73,12 @@ def _silence_ratio(wav: np.ndarray, sr: int) -> float:
     if wav.size == 0:
         return 1.0
     frame_len = max(1, int(sr * _FRAME_SIZE_S))
-    n_frames = math.ceil(wav.size / frame_len)
-    silent = 0
-    for i in range(n_frames):
-        frame = wav[i * frame_len : (i + 1) * frame_len]
-        rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-        if rms < _SILENCE_RMS_THRESHOLD:
-            silent += 1
-    return silent / n_frames
+    # Pad so reshape is exact, then compute per-frame RMS in one vectorized pass.
+    pad = (-wav.size) % frame_len
+    padded = np.pad(wav.astype(np.float64), (0, pad))
+    frames = padded.reshape(-1, frame_len)
+    rms_per_frame = np.sqrt(np.mean(frames ** 2, axis=1))
+    return float(np.sum(rms_per_frame < _SILENCE_RMS_THRESHOLD) / len(rms_per_frame))
 
 
 def _check_wav(

@@ -123,7 +123,7 @@ def code_switch_review_stats(reviewed_segments) -> Dict[str, float | int]:
         return {"accuracy": 0.99, "code_switch_segment_count": 0, "unresolved_code_switch_count": 0}
     passed = relevant - unresolved_count
     return {
-        "accuracy": round(0.99 * (passed / relevant), 4),
+        "accuracy": round(passed / relevant, 4),
         "code_switch_segment_count": relevant,
         "unresolved_code_switch_count": unresolved_count,
     }
