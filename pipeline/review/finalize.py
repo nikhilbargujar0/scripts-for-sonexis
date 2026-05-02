@@ -117,6 +117,24 @@ def _comparison_source_type(record: Dict) -> str:
     return "current_transcript_before_first_review"
 
 
+def _second_pass_required(record: Dict, reviewed: Dict) -> bool:
+    delivery_policy = record.get("delivery_policy") or {}
+    quality_targets = record.get("quality_targets") or {}
+    premium_processing = record.get("premium_processing") or {}
+    reviewed_second_pass = reviewed.get("second_pass_review") or {}
+    return bool(
+        reviewed_second_pass.get("required")
+        or delivery_policy.get("second_pass_required")
+        or quality_targets.get("second_pass_review_required")
+        or premium_processing.get("enterprise_review_required")
+        or premium_processing.get("second_pass_review_required")
+        or (
+            record.get("pipeline_mode") == "premium_accuracy"
+            and delivery_policy.get("enterprise_mode")
+        )
+    )
+
+
 def _known_speakers(record: Dict) -> set[str]:
     speakers = set((record.get("metadata", {}).get("speakers") or {}).keys())
     speakers.update(seg.get("speaker_id") for seg in record.get("transcript", {}).get("segments", []) if seg.get("speaker_id"))
@@ -268,6 +286,9 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
             "unresolved_issue_count": unresolved_issue_count,
             "delivery_confidence": round(delivery_confidence, 4),
             "confidence_basis": "completed_human_review_no_empty_segments_no_unresolved_issues",
+            "delivery_confidence_is_measured_accuracy": False,
+            "delivery_confidence_type": "policy_confidence_after_completed_human_review",
+            "measured_final_word_accuracy_available": False,
             "timestamp_confidence": 0.985,
             "timestamp_confidence_basis": "human_review_without_external_timing_audit",
         },
@@ -406,6 +427,9 @@ def _update_accuracy_gate(record: Dict, metrics: Dict, targets: Dict[str, float]
         "human_review_required": review_was_required,
         "human_review_completed": bool(verified["verified_accuracy"]),
         "human_review_required_for_delivery": bool(reasons),
+        "word_accuracy_basis": "reviewed_delivery_confidence",
+        "asr_accuracy_basis": "asr_vs_review_only_not_delivery_claim",
+        "reviewed_delivery_target_met": not reasons,
         "reasons": list(dict.fromkeys(reasons)),
     })
     record["accuracy_gate"] = gate
@@ -435,6 +459,9 @@ def finalize_review(
         "sample_rate": 0.0,
         "notes": "",
     }
+    second_pass = dict(second_pass)
+    if _second_pass_required(candidate, reviewed):
+        second_pass["required"] = True
     if second_pass.get("required") and not second_pass.get("completed"):
         review_errors.append("second_pass_review_required_not_completed")
     completed = reviewed.get("status") == "completed" and not review_errors
@@ -458,6 +485,7 @@ def finalize_review(
         candidate["accuracy_gate"]["human_review_required"] = True
         candidate["accuracy_gate"]["human_review_completed"] = bool(completed)
         candidate["accuracy_gate"]["human_review_required_for_delivery"] = True
+        candidate["accuracy_gate"]["reviewed_delivery_target_met"] = False
         candidate["accuracy_gate"]["reasons"] = gate_reasons
 
     passed = bool(completed and validation_passed and candidate["accuracy_gate"]["passed"])
@@ -482,6 +510,13 @@ def finalize_review(
         "reviewed_at": now,
         "targets": target_values,
         **metrics,
+        "target_reviewed_delivery_accuracy": target_values["word_accuracy"],
+        "reviewed_delivery_target_met": passed,
+        "reviewed_delivery_accuracy_claim": "target_met_after_human_review",
+        "client_safe_accuracy_statement": (
+            "Reviewed transcript met the target delivery accuracy gate after human QA. "
+            "ASR accuracy is reported separately as ASR-vs-review WER/CER."
+        ),
         "passed": passed,
         "failure_reasons": failure_reasons,
         "validation_passed": validation_passed,

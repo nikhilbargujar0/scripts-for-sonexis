@@ -8,7 +8,7 @@ from pathlib import Path
 from jsonschema.exceptions import ValidationError
 
 from pipeline.dataset_writer import DatasetWriter
-from pipeline.output_formatter import DATASET_SCHEMA_VERSION
+from pipeline.output_formatter import DATASET_SCHEMA_VERSION, _default_accuracy_gate
 from pipeline.review.finalize import finalize_review
 from pipeline.review.metrics import timestamp_accuracy
 from pipeline.schema_validator import validate_record
@@ -36,6 +36,8 @@ def _record(*, validation_passed: bool = True) -> dict:
             "verified_accuracy": False,
             "passed": False,
             "human_review_required": True,
+            "human_review_completed": False,
+            "human_review_required_for_delivery": True,
             "reasons": ["estimated_word_accuracy_below_target"],
         },
         "human_review": {"required": True, "status": "pending"},
@@ -323,6 +325,33 @@ class ReviewFinalizeTests(unittest.TestCase):
     def test_schema_version_consistent(self) -> None:
         self.assertEqual(_record()["schema_version"], DATASET_SCHEMA_VERSION)
 
+    def test_default_accuracy_gate_is_complete_and_schema_valid(self) -> None:
+        gate = _default_accuracy_gate()
+        for field in (
+            "target_code_switch_accuracy",
+            "estimated_code_switch_accuracy",
+            "verified_code_switch_accuracy",
+            "verified_accuracy",
+            "human_review_completed",
+            "human_review_required_for_delivery",
+        ):
+            self.assertIn(field, gate)
+
+        record = _record()
+        record["accuracy_gate"] = gate
+        validate_record(record)
+
+    def test_schema_rejects_missing_review_state_fields(self) -> None:
+        missing_completed = _record()
+        del missing_completed["accuracy_gate"]["human_review_completed"]
+        with self.assertRaises(ValidationError):
+            validate_record(missing_completed)
+
+        missing_required_for_delivery = _record()
+        del missing_required_for_delivery["accuracy_gate"]["human_review_required_for_delivery"]
+        with self.assertRaises(ValidationError):
+            validate_record(missing_required_for_delivery)
+
     def test_accuracy_below_target_rejects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -570,6 +599,89 @@ class ReviewFinalizeTests(unittest.TestCase):
         self.assertLess(first_timestamp, 1.0)
         self.assertEqual(first_timestamp, second_timestamp)
         self.assertEqual(second_qa["comparison_source"]["type"], "asr_transcript_before_review")
+
+    def test_premium_enterprise_mode_requires_second_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = _record()
+            record["delivery_policy"] = {"enterprise_mode": True}
+            ann, rev = self._write_inputs(root, record, _review())
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("second_pass_review_required_not_completed", summary["failure_reasons"])
+        self.assertEqual(updated["delivery_status"]["stage"], "rejected")
+
+    def test_explicit_delivery_policy_requires_second_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = _record()
+            record["delivery_policy"] = {"second_pass_required": True}
+            ann, rev = self._write_inputs(root, record, _review())
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+
+        self.assertFalse(summary["approved_for_client_delivery"])
+        self.assertIn("second_pass_review_required_not_completed", summary["failure_reasons"])
+
+    def test_completed_second_pass_allows_enterprise_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = _record()
+            record["delivery_policy"] = {"enterprise_mode": True}
+            review = _review()
+            review["second_pass_review"] = {
+                "required": True,
+                "completed": True,
+                "reviewer_id": "reviewer_002",
+                "sample_rate": 0.1,
+                "agreement_score": 1.0,
+                "notes": "sample passed",
+            }
+            ann, rev = self._write_inputs(root, record, review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["reviewer_id"], "reviewer_002")
+        self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["sample_rate"], 0.1)
+        self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["agreement_score"], 1.0)
+        self.assertEqual(qa["reviewed_delivery"]["second_pass_review"]["notes"], "sample passed")
+
+    def test_qa_report_uses_client_safe_accuracy_statement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ann, rev = self._write_inputs(root, _record(), _review())
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(qa["reviewed_delivery"]["delivery_confidence_is_measured_accuracy"])
+        self.assertEqual(
+            qa["reviewed_delivery"]["delivery_confidence_type"],
+            "policy_confidence_after_completed_human_review",
+        )
+        self.assertFalse(qa["reviewed_delivery"]["measured_final_word_accuracy_available"])
+        self.assertIn("client_safe_accuracy_statement", qa)
+        self.assertEqual(qa["asr_vs_review"]["measurement_type"], "asr_compared_to_human_review")
+        self.assertEqual(
+            qa["verified_final"]["word_accuracy_measurement_type"],
+            "reviewed_delivery_confidence",
+        )
+
+    def test_asr_wer_does_not_control_delivery_approval_after_human_qa(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["asr_text"] = "completely wrong machine transcript"
+            review["segments"][1]["asr_text"] = "another incorrect hypothesis"
+            ann, rev = self._write_inputs(root, _record(), review)
+            summary = finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(summary["approved_for_client_delivery"])
+        self.assertGreater(qa["asr_vs_review"]["wer"], 0.5)
+        self.assertEqual(qa["asr_vs_review"]["measurement_type"], "asr_compared_to_human_review")
+        self.assertTrue(qa["approved_for_client_delivery"])
 
 
 if __name__ == "__main__":  # pragma: no cover

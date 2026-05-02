@@ -354,12 +354,22 @@ def _default_accuracy_gate() -> Dict:
     return {
         "target_word_accuracy": 0.99,
         "estimated_word_accuracy": 0.0,
+        "verified_word_accuracy": None,
         "target_speaker_accuracy": 0.99,
         "estimated_speaker_accuracy": 0.0,
+        "verified_speaker_accuracy": None,
         "target_timestamp_accuracy": 0.98,
         "estimated_timestamp_accuracy": 0.0,
+        "verified_timestamp_accuracy": None,
+        "target_code_switch_accuracy": 0.99,
+        "estimated_code_switch_accuracy": 0.0,
+        "verified_code_switch_accuracy": None,
+        "estimated": True,
+        "verified_accuracy": False,
         "passed": False,
         "human_review_required": True,
+        "human_review_completed": False,
+        "human_review_required_for_delivery": True,
         "reasons": ["accuracy_gate_not_evaluated"],
     }
 

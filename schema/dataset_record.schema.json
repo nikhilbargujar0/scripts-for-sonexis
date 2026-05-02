@@ -34,25 +34,52 @@
     },
     "accuracy_gate": {
       "type": "object",
-      "required": ["passed", "human_review_required"],
+      "required": [
+        "passed",
+        "human_review_required",
+        "human_review_completed",
+        "human_review_required_for_delivery"
+      ],
       "additionalProperties": true,
       "properties": {
         "target_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
         "estimated_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
-        "verified_word_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_word_accuracy": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
         "target_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
         "estimated_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
-        "verified_speaker_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_speaker_accuracy": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
         "target_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
         "estimated_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
-        "verified_timestamp_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_timestamp_accuracy": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
         "target_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
         "estimated_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
-        "verified_code_switch_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+        "verified_code_switch_accuracy": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "maximum": 1},
+            {"type": "null"}
+          ]
+        },
         "estimated": {"type": "boolean"},
         "verified_accuracy": {"type": "boolean"},
         "passed": {"type": "boolean"},
         "human_review_required": {"type": "boolean"},
+        "human_review_completed": {"type": "boolean"},
+        "human_review_required_for_delivery": {"type": "boolean"},
         "reasons": {"type": "array", "items": {"type": "string"}}
       }
     },

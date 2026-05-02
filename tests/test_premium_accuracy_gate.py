@@ -26,6 +26,12 @@ class PremiumAccuracyGateTests(unittest.TestCase):
 
         self.assertFalse(gate["passed"])
         self.assertTrue(gate["human_review_required"])
+        self.assertFalse(gate["human_review_completed"])
+        self.assertTrue(gate["human_review_required_for_delivery"])
+        self.assertIsNone(gate["verified_word_accuracy"])
+        self.assertIsNone(gate["verified_speaker_accuracy"])
+        self.assertIsNone(gate["verified_timestamp_accuracy"])
+        self.assertIsNone(gate["verified_code_switch_accuracy"])
         self.assertIn("estimated_word_accuracy_below_target", gate["reasons"])
         self.assertIn("estimated_timestamp_accuracy_below_target", gate["reasons"])
         self.assertIn("estimated_code_switch_accuracy_below_target", gate["reasons"])

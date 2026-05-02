@@ -78,16 +78,22 @@ def build_accuracy_gate(
     return {
         "target_word_accuracy": round(target_word, 4),
         "estimated_word_accuracy": round(float(estimated_word), 4),
+        "verified_word_accuracy": None,
         "target_speaker_accuracy": round(target_speaker, 4),
         "estimated_speaker_accuracy": round(float(estimated_speaker), 4),
+        "verified_speaker_accuracy": None,
         "target_timestamp_accuracy": round(target_timestamp, 4),
         "estimated_timestamp_accuracy": round(float(estimated_timestamp), 4),
+        "verified_timestamp_accuracy": None,
         "target_code_switch_accuracy": round(target_code_switch, 4),
         "estimated_code_switch_accuracy": round(float(estimated_code_switch), 4),
+        "verified_code_switch_accuracy": None,
         "estimated": True,
         "verified_accuracy": False,
         "passed": not reasons,
         "human_review_required": bool(reasons),
+        "human_review_completed": False,
+        "human_review_required_for_delivery": bool(reasons),
         "reasons": reasons,
     }
 
