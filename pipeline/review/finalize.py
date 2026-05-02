@@ -103,6 +103,20 @@ def _targets(record: Dict, overrides: Optional[Dict]) -> Dict[str, float]:
     }
 
 
+def _original_transcript_for_review(record: Dict) -> Dict:
+    source = record.get("asr_transcript_before_review")
+    if isinstance(source, dict) and source.get("segments"):
+        return deepcopy(source)
+    return deepcopy(record.get("transcript", {}))
+
+
+def _comparison_source_type(record: Dict) -> str:
+    source = record.get("asr_transcript_before_review")
+    if isinstance(source, dict) and source.get("segments"):
+        return "asr_transcript_before_review"
+    return "current_transcript_before_first_review"
+
+
 def _known_speakers(record: Dict) -> set[str]:
     speakers = set((record.get("metadata", {}).get("speakers") or {}).keys())
     speakers.update(seg.get("speaker_id") for seg in record.get("transcript", {}).get("segments", []) if seg.get("speaker_id"))
@@ -274,9 +288,10 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
 def _update_canonical_transcript(record: Dict, reviewed_segments: List[Dict]) -> None:
     if "asr_transcript_before_review" not in record:
         record["asr_transcript_before_review"] = deepcopy(record.get("transcript", {}))
+    original_transcript = _original_transcript_for_review(record)
     original_by_id = {
         str(seg.get("segment_id")): seg
-        for seg in record.get("transcript", {}).get("segments", [])
+        for seg in original_transcript.get("segments", [])
         if seg.get("segment_id")
     }
     new_segments: List[Dict] = []
@@ -424,8 +439,14 @@ def finalize_review(
         review_errors.append("second_pass_review_required_not_completed")
     completed = reviewed.get("status") == "completed" and not review_errors
     can_update_canonical = completed and bool(reviewed_segments)
-    original_segments = deepcopy(candidate.get("transcript", {}).get("segments", []))
+    comparison_source_type = _comparison_source_type(candidate)
+    original_transcript = _original_transcript_for_review(candidate)
+    original_segments = original_transcript.get("segments", [])
     metrics = _compute_metrics(reviewed_segments, original_segments, completed)
+    metrics["comparison_source"] = {
+        "type": comparison_source_type,
+        "segment_count": len(original_segments),
+    }
     metrics["reviewed_delivery"]["word_accuracy_target"] = target_values["word_accuracy"]
     metrics["reviewed_delivery"]["second_pass_review"] = second_pass
     validation_passed = bool(candidate.get("validation", {}).get("passed"))

@@ -485,6 +485,92 @@ class ReviewFinalizeTests(unittest.TestCase):
             self.assertFalse((root / "transcripts" / "conversation_0001" / "combined_conversation.json").exists())
             self.assertFalse((root / "manifests").exists())
 
+    def test_original_asr_source_is_preserved_on_first_finalisation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["reviewed_text"] = "reviewed hello world"
+            ann, rev = self._write_inputs(root, _record(), review)
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertIn("asr_transcript_before_review", updated)
+        self.assertEqual(updated["asr_transcript_before_review"]["segments"][0]["text"], "hello world")
+        self.assertEqual(updated["transcript"]["segments"][0]["text"], "reviewed hello world")
+        self.assertEqual(qa["comparison_source"]["type"], "current_transcript_before_first_review")
+        self.assertEqual(qa["comparison_source"]["segment_count"], 2)
+
+    def test_second_finalisation_does_not_overwrite_original_asr_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["reviewed_text"] = "reviewed hello world"
+            ann, rev = self._write_inputs(root, _record(), review)
+
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            updated = json.loads(ann.read_text(encoding="utf-8"))
+            qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(updated["asr_transcript_before_review"]["segments"][0]["text"], "hello world")
+        self.assertNotEqual(updated["asr_transcript_before_review"]["segments"][0]["text"], "reviewed hello world")
+        self.assertEqual(updated["transcript"]["segments"][0]["text"], "reviewed hello world")
+        self.assertEqual(qa["comparison_source"]["type"], "asr_transcript_before_review")
+
+    def test_metrics_remain_stable_across_repeated_finalisation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["reviewed_text"] = "reviewed hello world"
+            ann, rev = self._write_inputs(root, _record(), review)
+
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            first_qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+            finalize_review(str(ann), str(rev), str(root), "reviewer_001")
+            second_qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            first_qa["verified_final"]["speaker_accuracy"],
+            second_qa["verified_final"]["speaker_accuracy"],
+        )
+        self.assertEqual(
+            first_qa["verified_final"]["timestamp_accuracy"],
+            second_qa["verified_final"]["timestamp_accuracy"],
+        )
+        self.assertEqual(first_qa["asr_vs_review"]["wer"], second_qa["asr_vs_review"]["wer"])
+        self.assertEqual(first_qa["asr_vs_review"]["word_accuracy"], second_qa["asr_vs_review"]["word_accuracy"])
+
+    def test_repeated_timestamp_metrics_compare_against_original_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            review = _review()
+            review["segments"][0]["end"] = 2.2
+            ann, rev = self._write_inputs(root, _record(), review)
+
+            finalize_review(
+                str(ann),
+                str(rev),
+                str(root),
+                "reviewer_001",
+                targets={"timestamp_accuracy_target": 0.80},
+            )
+            first_qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+            finalize_review(
+                str(ann),
+                str(rev),
+                str(root),
+                "reviewer_001",
+                targets={"timestamp_accuracy_target": 0.80},
+            )
+            second_qa = json.loads((root / "review" / "conversation_0001" / "qa_report.json").read_text(encoding="utf-8"))
+
+        first_timestamp = first_qa["verified_final"]["timestamp_accuracy"]
+        second_timestamp = second_qa["verified_final"]["timestamp_accuracy"]
+        self.assertLess(first_timestamp, 1.0)
+        self.assertEqual(first_timestamp, second_timestamp)
+        self.assertEqual(second_qa["comparison_source"]["type"], "asr_transcript_before_review")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
