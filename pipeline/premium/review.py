@@ -79,6 +79,7 @@ def build_human_review(
                 reasons.append("transcript_disagreement")
                 score += 0.12
 
+    score = min(score, 1.0)
     reasons = list(dict.fromkeys(reasons))
     review_required = bool(
         require_human_review

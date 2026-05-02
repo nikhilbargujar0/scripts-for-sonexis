@@ -254,6 +254,12 @@ def normalize_messy_input(
         report["languages"][canonical_language] = language_report
         conversation_index = 1
         for candidate in _conversation_candidates(source_language_dir):
+            unsupported = [
+                str(p) for p in candidate.rglob("*")
+                if p.is_file() and p.suffix.lower() in {".mp3", ".flac", ".m4a", ".ogg"}
+            ]
+            if unsupported:
+                language_report.setdefault("unsupported_audio_files", []).extend(unsupported)
             speaker1, speaker2, reason = _select_speaker_files(candidate)
             if reason or speaker1 is None or speaker2 is None:
                 language_report["skipped"].append({"source": str(candidate.resolve()), "reason": reason or "missing_speaker_pair"})

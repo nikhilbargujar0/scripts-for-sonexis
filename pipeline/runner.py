@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import zipfile
-from contextlib import redirect_stderr, redirect_stdout
+
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -139,71 +139,70 @@ def process_conversation(
     written_validation_reports: List[str] = []
     input_type = cfg.input_type
     try:
-        with redirect_stdout(logs), redirect_stderr(logs):
-            _log(progress_callback, "resolve input")
-            input_type, work_items = _resolve_input(input_path, cfg)
-            _log(progress_callback, f"input type: {input_type}")
+        _log(progress_callback, "resolve input")
+        input_type, work_items = _resolve_input(input_path, cfg)
+        _log(progress_callback, f"input type: {input_type}")
 
-            _log(progress_callback, "load local models")
-            transcriber, ft_lid, classifier = load_models_once(cfg, model_dir)
-            dataset_writer = DatasetWriter(output_root=output_path, output_mode=cfg.output_mode,
-                                           output_format=cfg.output_format, dataset_name=cfg.dataset_name)
-            batch_writer = BatchWriter(output_dir=output_path, fmt=cfg.output_format,
-                                       dataset_name=cfg.dataset_name)
+        _log(progress_callback, "load local models")
+        transcriber, ft_lid, classifier = load_models_once(cfg, model_dir)
+        dataset_writer = DatasetWriter(output_root=output_path, output_mode=cfg.output_mode,
+                                       output_format=cfg.output_format, dataset_name=cfg.dataset_name)
+        batch_writer = BatchWriter(output_dir=output_path, fmt=cfg.output_format,
+                                   dataset_name=cfg.dataset_name)
 
-            shared = dict(transcriber=transcriber, ft_lid=ft_lid, classifier=classifier,
-                          cfg=cfg, dataset_writer=dataset_writer, model_dir=model_dir)
+        shared = dict(transcriber=transcriber, ft_lid=ft_lid, classifier=classifier,
+                      cfg=cfg, dataset_writer=dataset_writer, model_dir=model_dir)
 
-            for idx, item in enumerate(work_items, 1):
-                _log(progress_callback, f"process session {idx}/{len(work_items)}")
-                if input_type == "stereo":
-                    session_name = os.path.splitext(os.path.basename(item))[0]
-                    pair = load_stereo_as_pair(item, session_name=session_name)
-                    if pair is None:
-                        raise ProcessingError(f"cannot load stereo file: {item}")
-                    record = process_speaker_pair(pair, **shared)
-                elif input_type == "speaker_pair":
-                    session_name, p1, l1, p2, l2 = item
-                    pair = load_speaker_pair(p1, l1, p2, l2, session_name=session_name)
-                    if pair is None:
-                        raise ProcessingError(f"cannot load speaker pair: {session_name}")
-                    record = process_speaker_pair(pair, **shared)
-                elif input_type == "speaker_folders":
-                    session_name, p1, l1, p2, l2, metadata, validation_context = item
-                    pair = load_studio_speaker_folders(
-                        p1,
-                        l1,
-                        p2,
-                        l2,
-                        session_name=session_name,
-                        metadata=metadata,
-                        validation_context=validation_context,
-                    )
-                    if pair is None:
-                        raise ProcessingError(f"cannot load studio speaker folder: {session_name}")
-                    record = process_speaker_pair(pair, **shared)
-                else:
-                    clip = load_audio(item)
-                    if clip is None:
-                        raise ProcessingError(f"cannot load audio file: {item}")
-                    record = process_single(clip, **shared)
-
-                validate_record_against_schema(record)
-                if cfg.fail_fast and not record.get("validation", {}).get("passed", True):
-                    raise ProcessingError(
-                        f"validation failed for {record.get('session_name', 'session')}: "
-                        f"{record.get('validation', {}).get('issues', [])}"
-                    )
-                written_validation_reports.append(
-                    write_validation_report(record.get("validation", {}), output_path, record.get("session_name", "session"))
+        for idx, item in enumerate(work_items, 1):
+            _log(progress_callback, f"process session {idx}/{len(work_items)}")
+            if input_type == "stereo":
+                session_name = os.path.splitext(os.path.basename(item))[0]
+                pair = load_stereo_as_pair(item, session_name=session_name)
+                if pair is None:
+                    raise ProcessingError(f"cannot load stereo file: {item}")
+                record = process_speaker_pair(pair, **shared)
+            elif input_type == "speaker_pair":
+                session_name, p1, l1, p2, l2 = item
+                pair = load_speaker_pair(p1, l1, p2, l2, session_name=session_name)
+                if pair is None:
+                    raise ProcessingError(f"cannot load speaker pair: {session_name}")
+                record = process_speaker_pair(pair, **shared)
+            elif input_type == "speaker_folders":
+                session_name, p1, l1, p2, l2, metadata, validation_context = item
+                pair = load_studio_speaker_folders(
+                    p1,
+                    l1,
+                    p2,
+                    l2,
+                    session_name=session_name,
+                    metadata=metadata,
+                    validation_context=validation_context,
                 )
-                records.append(record)
-                batch_writer.write(record)
+                if pair is None:
+                    raise ProcessingError(f"cannot load studio speaker folder: {session_name}")
+                record = process_speaker_pair(pair, **shared)
+            else:
+                clip = load_audio(item)
+                if clip is None:
+                    raise ProcessingError(f"cannot load audio file: {item}")
+                record = process_single(clip, **shared)
 
-            final_batch = batch_writer.close()
-            if final_batch:
-                _log(progress_callback, f"batch written: {final_batch}")
-            _log(progress_callback, "done")
+            validate_record_against_schema(record)
+            if cfg.fail_fast and not record.get("validation", {}).get("passed", True):
+                raise ProcessingError(
+                    f"validation failed for {record.get('session_name', 'session')}: "
+                    f"{record.get('validation', {}).get('issues', [])}"
+                )
+            written_validation_reports.append(
+                write_validation_report(record.get("validation", {}), output_path, record.get("session_name", "session"))
+            )
+            records.append(record)
+            batch_writer.write(record)
+
+        final_batch = batch_writer.close()
+        if final_batch:
+            _log(progress_callback, f"batch written: {final_batch}")
+        _log(progress_callback, "done")
     finally:
         root_logger.removeHandler(handler)
         root_logger.setLevel(previous_level)

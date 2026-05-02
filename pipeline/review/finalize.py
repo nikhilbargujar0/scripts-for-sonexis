@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..schema_validator import validate_record
+
+_DELIVERY_CONFIDENCE_COMPLETE: float = 0.995
+_UNRESOLVED_ISSUE_PENALTY: float = 0.05
 from ..transcription import normalise_transcript
 from .metrics import (
     character_error_rate,
@@ -298,9 +301,9 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
     # Final reviewed transcript "word accuracy" is delivery confidence unless a
     # future second-pass sampled audit provides measured final accuracy.
     delivery_confidence = (
-        0.995
+        _DELIVERY_CONFIDENCE_COMPLETE
         if review_completed and empty_count == 0 and unresolved_issue_count == 0
-        else max(0.0, min(0.98, completion_rate - unresolved_issue_count * 0.05))
+        else max(0.0, min(0.98, completion_rate - unresolved_issue_count * _UNRESOLVED_ISSUE_PENALTY))
     )
     final_speaker = speaker_accuracy(reviewed_segments, original_segments)
     final_timestamp = timestamp_accuracy(reviewed_segments, original_segments)
@@ -321,7 +324,7 @@ def _compute_metrics(reviewed_segments: List[Dict], original_segments: List[Dict
             "delivery_confidence_is_measured_accuracy": False,
             "delivery_confidence_type": "policy_confidence_after_completed_human_review",
             "measured_final_word_accuracy_available": False,
-            "timestamp_confidence": 0.985,
+            "timestamp_confidence": round(final_timestamp, 4),
             "timestamp_confidence_basis": "human_review_without_external_timing_audit",
         },
         "verified_final": {
@@ -545,11 +548,7 @@ def finalize_review(
         )
     if can_update_canonical:
         _update_canonical_transcript(candidate, reviewed_segments)
-        side_files = build_final_transcript_side_file_paths(output_root, session, candidate)
         candidate.setdefault("artifacts", {})
-        candidate["artifacts"]["final_transcript_files"] = side_files
-    else:
-        side_files = {}
 
     review_dir = Path(output_root) / "review" / session
     qa_path = review_dir / "qa_report.json"
@@ -621,6 +620,8 @@ def finalize_review(
             "reason": "manual_approval_withheld",
         }
     elif not completed and not approve_if_passed:
+        # completed=False, approve_if_passed=False: reviewer submitted but review is incomplete.
+        # When approve_if_passed=True and completed=False the else branch handles "rejected".
         candidate.setdefault("human_review", {})
         candidate["human_review"].update({
             "required": True,
