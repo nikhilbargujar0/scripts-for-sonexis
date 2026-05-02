@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from pipeline.config import PipelineConfig, _detect_device
+from pipeline.input_normalizer import DEFAULT_LANGUAGE_MAP, normalize_messy_input
 from pipeline.runner import process_conversation
 
 
@@ -37,6 +38,27 @@ def _load_premium_config(path: str | None) -> dict:
     if not isinstance(loaded, dict):
         raise ValueError("premium config must be a JSON/YAML object")
     return loaded
+
+
+def _language_map_from_arg(value: str | None) -> dict[str, str]:
+    if not value:
+        return dict(DEFAULT_LANGUAGE_MAP)
+    out: dict[str, str] = {}
+    for raw in value.split(","):
+        name = raw.strip().lower()
+        if not name:
+            continue
+        out[name] = DEFAULT_LANGUAGE_MAP.get(name, name)
+    return out
+
+
+def _normalised_work_dir(args: argparse.Namespace, colab: bool) -> Path:
+    explicit = args.normalised_work_dir or args.normalized_work_dir
+    if explicit:
+        return Path(explicit)
+    if colab:
+        return Path("/content/sonexis_normalized_input")
+    return Path(args.output) / "_normalized_input"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,6 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--review_threshold", "--review-threshold", type=float, default=0.99)
     p.add_argument("--premium_engines", "--premium-engines", default="whisper_local,deepgram,google_stt_v2,azure_speech")
     p.add_argument("--export_products", "--export-products", default="stt,diarisation,evaluation_gold")
+    p.add_argument("--normalise_messy_input", "--normalise-messy-input",
+                   "--normalize_messy_input", "--normalize-messy-input",
+                   type=_bool, default=False)
+    p.add_argument("--normalised_work_dir", "--normalised-work-dir", default=None)
+    p.add_argument("--normalized_work_dir", "--normalized-work-dir", default=None)
+    p.add_argument("--language_folders", "--language-folders", default="english,hindi,hinglish,marwadi,punjabi")
+    p.add_argument("--audit_input_only", "--audit-input-only", type=_bool, default=False)
     return p
 
 
@@ -179,6 +208,55 @@ def main(argv: list[str] | None = None) -> int:
         cfg.premium["enabled"] = True
         cfg.premium["allow_paid_apis"] = bool(cfg.allow_paid_apis)
         cfg.premium["preferred_asr_engines"] = list(cfg.premium_engines)
+
+    if args.normalise_messy_input:
+        language_map = _language_map_from_arg(args.language_folders)
+        work_root = _normalised_work_dir(args, colab)
+        report = normalize_messy_input(Path(args.input), work_root, language_map=language_map)
+        report_path = work_root / "normalization_report.json"
+        if args.audit_input_only:
+            print(json.dumps({
+                "normalization_report": str(report_path.resolve()),
+                "total_valid_conversations": report["total_valid_conversations"],
+                "total_skipped": report["total_skipped"],
+                "languages": report["languages"],
+                "errors": report["errors"],
+                "audit_input_only": True,
+            }, indent=2, sort_keys=True))
+            return 0
+        if report["total_valid_conversations"] <= 0:
+            raise RuntimeError(
+                "No valid speaker-separated conversations found. "
+                f"See normalization report: {report_path.resolve()}"
+            )
+
+        all_records = []
+        all_validation_reports = []
+        downloads = {}
+        processed_languages = []
+        for language, details in sorted(report["languages"].items()):
+            if int(details.get("valid_conversations") or 0) <= 0:
+                continue
+            language_input = Path(details["normalised_folder"])
+            language_output = Path(args.output) / language
+            language_cfg = PipelineConfig.from_dict({**cfg.__dict__, "input_type": "speaker_folders", "language": details["language_code"]})
+            result = process_conversation(str(language_input), str(language_output), language_cfg)
+            all_records.extend(result.get("records", []))
+            all_validation_reports.extend(result.get("validation_reports", []))
+            downloads[language] = result.get("downloads", {})
+            processed_languages.append(language)
+        summary = {
+            "output_path": str(Path(args.output).resolve()),
+            "normalization_report": str(report_path.resolve()),
+            "processed_languages": processed_languages,
+            "records": len(all_records),
+            "validation_reports": all_validation_reports,
+            "downloads": downloads,
+        }
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+
     result = process_conversation(args.input, args.output, cfg)
     summary = {
         "output_path": result["output_path"],
