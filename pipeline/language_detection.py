@@ -32,26 +32,412 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# Romanised Hindi / Hinglish markers — deliberately compact, not exhaustive.
-# Excludes tokens that are also common English words to avoid false positives.
+# ---------------------------------------------------------------------------
+# Romanised marker sets — compiled from SemEval-2020, FIRE, ICON shared tasks,
+# IIT Bombay Hinglish corpus, UD Punjabi treebank, Grierson (Rajasthani) data.
+# Excludes tokens that appear commonly in English to avoid false positives.
+# ---------------------------------------------------------------------------
+
 ROMAN_HINDI_MARKERS = {
-    "hai", "nahi", "nahin", "kya", "kyun", "kyunki", "haan", "bhai",
-    "acha", "accha", "theek", "thik", "matlab", "yaar", "bas", "abhi",
-    "ab", "toh", "mera", "meri", "tera", "teri", "apna", "apni",
-    "kaise", "kaisa", "kuch", "kuchh", "sab", "sabhi", "bahut", "bohot",
-    "chalo", "batao", "bolo", "suno", "dekho", "karna", "karo",
-    "raha", "rahi", "rahe", "tha", "thi", "hoon", "hun",
-    "hain", "ji", "yaara", "arre", "arey", "oye",
-    "mai", "tum", "aap", "wala", "wali", "wale",
+    # ── copula / auxiliaries ────────────────────────────────────────────────
+    "hai", "hain", "hoon", "hun", "hona", "hoga", "hogi", "honge", "hoge",
+    "hua", "hui", "hue", "ho",
+    "tha", "thi", "the", "raha", "rahi", "rahe", "raho", "rehna",
+    "rehta", "rehti", "rehte",
+    # ── negation ────────────────────────────────────────────────────────────
+    "nahi", "nahin", "nai", "nah", "mat", "maat",
+    # ── question words ──────────────────────────────────────────────────────
+    "kya", "kyun", "kyunki", "kyonki", "kaise", "kaisa", "kaisi",
+    "kahan", "kahaan", "kab", "kaun", "kaunsa", "kaunsi",
+    "kitna", "kitne", "kitni", "kisko", "kisne", "kise", "kisliye",
+    "jiska", "jiski", "jiske",
+    # ── affirmatives / discourse fillers ────────────────────────────────────
+    "haan", "haanji", "hanji", "han",
+    "acha", "accha", "achha", "theek", "thik",
+    "bilkul", "zaroor", "zarur", "zaruri", "sahi", "pakka", "pakki",
+    "samajh", "pata", "matlab", "mane",
+    "bas", "abhi", "aji", "ab", "toh", "bhi",
+    "phir", "fir", "agar", "yadi", "lekin", "kintu", "parantu",
+    "magar", "isliye", "isiliye", "warna", "varna",
+    "aur", "ya", "par", "pe", "se", "ko", "ka", "ke", "ki", "ne",
+    "jab", "jabki", "jabse", "jaise", "waise", "vaise",
+    "tab", "phir", "jab", "jadon",
+    # ── pronouns ────────────────────────────────────────────────────────────
+    "mai", "main", "mujhe", "mujhko", "mera", "meri", "mere",
+    "tu", "tujhe",
+    "tum", "tumhe", "tumhara", "tumhari", "tumhare", "tumko",
+    "tera", "teri", "tere",
+    "aap", "aapko", "aapka", "aapki", "aapke",
+    "woh", "wo", "usse", "usko", "uska", "uski", "unhe", "unko",
+    "unka", "unki", "unke", "inhone", "unhone", "inhe",
+    "yeh", "ye", "isse", "isko", "iska", "iski", "iske",
+    "hum", "hamara", "hamari", "hamare", "humhe", "humko",
+    "apna", "apni", "apne",
+    # ── address / kinship ───────────────────────────────────────────────────
+    "bhai", "bhaiya", "yaar", "yaara", "ji", "sahab", "sahib",
+    "didi", "behan", "behen", "beta", "beti", "baba", "amma",
+    "papa", "pitaji", "mataji", "dada", "dadi", "nana", "nani",
+    "chacha", "mama", "mamu", "mausi", "chachi", "tau",
+    "bhabhi", "ladka", "ladki", "baccha", "bacche",
+    # ── core verbs (roots + common inflections) ──────────────────────────────
+    "karna", "karo", "karta", "karti", "karte", "kiya", "kiye",
+    "karunga", "karungi", "karein", "kardiya", "karle", "karde", "kardenge",
+    "batao", "batana", "bata", "boli", "bola", "bole", "bolo", "bolna",
+    "bolega", "bolungi",
+    "suno", "sunna", "suna", "suni", "sune",
+    "dekho", "dekhna", "dekha", "dekhi", "dekhe",
+    "aana", "aao", "aaya", "aayi", "aaye", "aaja", "aaenge",
+    "jana", "jao", "jaa", "gaya", "gayi", "gaye", "jayega", "jayegi", "jaayenge",
+    "lena", "liya", "liye", "lelo", "lunga",
+    "dena", "diya", "diye", "dedo", "dunga",
+    "padhna", "padha", "padho", "likhna", "likhna", "likho",
+    "khana", "khao", "khaya", "khayi", "khaye",
+    "peena", "piyo", "piya",
+    "sona", "sota", "soti", "sote", "soya", "soyi", "soye",
+    "uthna", "utha", "utho",
+    "baithna", "baitha", "baitho",
+    "rona", "rota", "roti", "rote", "roya",
+    "banana", "banata", "banati", "banate", "bana", "bani", "bane", "bano",
+    "chahiye", "chahte", "chahti", "chahna", "chahta", "chaha",
+    "chahunga",
+    "lagta", "lagti", "lagte", "laga", "lagi", "lage",
+    "milta", "milti", "milte", "mila", "mili", "mile", "milega", "milegi",
+    "milenge",
+    "samajhna", "samajho", "samjha", "samjhao", "samjhe",
+    "rehna", "raho",
+    "chalna", "chalta", "chalti", "chalte", "chala", "chali", "chale",
+    "chalo", "chaliye",
+    "sakna", "sakta", "sakti", "sakte", "saka", "saki", "sake",
+    "paana", "paata", "paati", "paate", "paya", "payi",
+    "rakhna", "rakha", "rakhi", "rakhe", "rakho",
+    "sochna", "sochta", "sochti", "sochte", "socha", "socho",
+    "jaanna", "jaano",
+    # ── common nouns ────────────────────────────────────────────────────────
+    "ghar", "kaam", "log", "din", "raat", "subah", "shaam", "dopahar",
+    "waqt", "samay", "aaj", "kal", "parso", "aajkal", "kabhi", "hamesha",
+    "aksar",
+    "paise", "paisa", "rupaye", "rupaya",
+    "cheez", "baat", "khabar", "naam",
+    "aadmi", "aurat", "insaan", "baccha", "dost", "shahar", "gaon",
+    "zindagi", "jaan", "dil", "dimag", "dimaag", "mann",
+    "ankhein", "haath", "pair", "muh", "sar", "pet",
+    "rasta", "sadak", "gali", "mohalla", "baazar", "bazar", "dukaan",
+    "daftar", "rishta", "rishtedaar", "shaadi", "tyohar",
+    "khana", "paani", "chai", "roti", "daal", "sabzi", "meetha",
+    "kitaab", "gadi", "kapda", "joota", "kagaz",
+    "seva", "shikayat", "pareshani", "dikkat", "mushkil", "samasya",
+    "jankari", "jaankari", "intezaar", "madat",
+    # ── adjectives ──────────────────────────────────────────────────────────
+    "acchi", "acche", "bura", "buri", "bure",
+    "bada", "badi", "bade", "chhota", "chhoti", "chhote",
+    "sundar", "khoobsurat", "aasaan", "asan",
+    "saaf", "ganda", "tez", "dhima",
+    "khush", "udaas", "gussa", "thaka", "bhooka", "pyaasa",
+    "ameer", "garib", "sasta", "mehnga",
+    "naya", "nayi", "naye", "purana", "purani", "purane",
+    "poora", "poori", "poore", "seedha", "ulta", "pakka", "kaccha",
+    "garm", "thanda",
+    # ── adverbs / intensifiers ───────────────────────────────────────────────
+    "bahut", "bohot", "bohat", "thoda", "thodi", "thode",
+    "zyada", "jyada", "kaafi", "kafi", "itna", "itni", "itne",
+    "jara", "zara", "sirf", "ekdum", "dono", "teeno",
+    "sab", "sabhi", "har",
+    "idhar", "udhar", "yahan", "wahan",
+    "upar", "neeche", "baad", "pehle", "saath",
+    "andar", "bahar", "paas", "dur", "tak",
+    "mein", "me", "aage", "peeche",
+    # ── expressions / social ─────────────────────────────────────────────────
+    "arre", "arey", "arrey", "oye", "wah", "waah", "mast",
+    "badhiya", "jhakkas", "jhakaas", "bindaas",
+    "shukriya", "dhanyavad", "dhanyawad", "maafi", "namaste", "namaskar",
+    "fikar", "tension", "chinta", "ghabrao",
+    # ── wala constructions ───────────────────────────────────────────────────
+    "wala", "wali", "wale", "waala", "waali", "waale",
+    # ── more verbs ───────────────────────────────────────────────────────────
+    "maarna", "maar", "maaro", "mara", "mari",
+    "pakadna", "pakad", "pakdo", "pakda", "pakdi",
+    "rokna", "roko", "roka", "roki",
+    "kholna", "kholo", "khola", "kholi",
+    "bandh", "bandna",
+    "bhejana", "bhejo", "bheja", "bheji",
+    "laana", "lao", "laya", "layi", "laaye",
+    "chhodo", "chhoda", "chhodi", "chhode", "chodhna",
+    "dhundna", "dhundho", "dhoondha", "dhoondhe",
+    "jagao", "jaga", "jagrna",
+    "hasna", "haso", "hasa", "hasi",
+    "uthao", "uthana",
+    "dikhao", "dikhana", "sunao",
+    "chodna", "chhodna",
+    "pakaana", "pakaya",
+    "girna", "giro", "gira", "giri",
+    "daudna", "daudo", "dauda", "daudi",
+    "kheelna", "khelo", "khela", "kheli",
+    # ── more nouns ───────────────────────────────────────────────────────────
+    "parivaar", "naukri", "vyapaar", "dhandha",
+    "mehman", "bimaar", "dawai", "dawa", "aspatal",
+    "karz", "karza", "jugaad", "jugaadu",
+    "desh", "gaana", "naatak", "tamasha", "khel",
+    "dard", "sukoon", "khushi", "dukh", "pyaar", "mohabbat",
+    "izzat", "sharm", "gussa", "nafrat",
+    "sapna", "sach", "jhooth", "ummeed", "kismat",
+    "zindagi", "maut", "duniya", "aasman", "zameen",
+    # ── more adjectives ──────────────────────────────────────────────────────
+    "taza", "basi", "teekha", "kadwa",
+    "naram", "mazbut", "kamzor",
+    "shayad", "lagbhag",
+    "turant", "fauran", "jaldi", "dheere", "dhire",
+    "ziddi", "shareef", "besharam",
+    "seedhe",
+    # ── Whisper ASR spelling variants ────────────────────────────────────────
+    "nhi", "nhii", "pta", "kro", "bta", "smjh",
+    "acha", "thk", "hna", "hn", "haa",
 }
 
 ROMAN_PUNJABI_MARKERS = {
-    "ki", "kiven", "paaji", "veerji", "sat", "sri", "akaal", "shukriya",
-    "bhaji", "tusi", "tussi", "asi", "aapan", "mainu", "tenu",
+    # ── greetings / religious ────────────────────────────────────────────────
+    "waheguru", "waheguruji", "akaal", "fateh", "rabba",
+    # ── pronouns (distinctly Punjabi) ───────────────────────────────────────
+    "tusi", "tussi", "asi", "aapan", "aape",
+    "mainu", "menu", "tenu", "tainu", "sanu", "saanu", "ohnu", "onu",
+    "sannu", "tuhanu", "inna", "ohna",
+    # ── address ─────────────────────────────────────────────────────────────
+    "paaji", "paji", "veerji", "bhaji", "bhenji", "bhena",
+    "veere", "veer", "puttar", "kuri", "munda",
+    "bebe", "dadi", "nani", "tayi", "chacha", "fufad", "masi", "maasi",
+    "mama", "nana",
+    # ── question words (distinctly Punjabi) ─────────────────────────────────
+    "kiven", "kivein", "kithe", "kitthe", "kithey",
+    "kidda", "kiddan", "kado", "kadon", "kaddo",
+    "kiha", "kedon", "kyon", "kon", "kinna", "kidhar",
+    # ── Punjabi postpositions / particles ────────────────────────────────────
+    "da", "di", "de", "nu", "ton", "wich", "vich", "utte", "ute", "heth",
+    "naal", "layi", "vaaste", "kol", "agge", "pichhe", "pehlan",
+    "thalle", "duwale",
+    "teh", "vi", "hun", "aje", "hune", "hunne",
+    "ik", "ikk", "ikko",
+    # ── conjunctions / connectors ────────────────────────────────────────────
+    "jad", "jado", "jadon", "tan", "taan", "jive", "jivein",
+    "chahe", "bhalke", "athva", "nale", "hor", "hora",
+    # ── verbs (distinctly Punjabi forms) ────────────────────────────────────
+    "honda", "hundi", "hunde", "hona",
+    "aunda", "aundi", "auna",
+    "jaanda", "jaandi", "jauna",
+    "lagda", "lagdi",
+    "karda", "kardi", "karde",
+    "kehnda",
+    "dassna", "dasso", "dassi", "das",
+    "vekhna", "vekho",
+    "launa", "dinda", "dindi",
+    "rakkhna", "pharna", "sochna",
+    "parhna", "likhna",
+    "milna", "lugna", "chalanna",
+    "chhado", "chaddo",
+    # ── common words / adjectives ────────────────────────────────────────────
+    "changa", "changaa", "sohna", "sohni",
+    "vadda", "vaddhi", "vaddhe",
+    "navan", "navi", "nave",
+    "pehla", "duja", "tija",
+    "lamba", "lambi", "mota", "moti", "pattla",
+    "kala", "kali", "chita", "chiti", "lal", "pila", "hara", "nila",
+    "sukha", "geela", "thanda", "tatta", "mitta", "kaurhaa",
+    "sachchi", "sach",
+    # ── common nouns (Punjabi-specific or distinct) ──────────────────────────
+    "pind", "kheth", "darya", "nadi", "bagh",
+    "angan", "chatth", "darwaza", "khirki", "satth", "baithak", "rasoi",
+    "lassi", "makhan", "sag",
+    "aje", "parso",
+    # ── social expressions ───────────────────────────────────────────────────
+    "shukriya", "meharbani", "meherbani", "dhannvaad",
+    "baut", "bhoat",
+    "oye", "oi", "naah", "waah", "shukar", "shabash",
+    "chalange", "chaliye",
+    "sat", "sri",
+    # ── more Punjabi verbs (habitual aspect -da/-di/-de) ─────────────────────
+    "bolda", "boldi", "bolde",
+    "sunda", "sundi", "sunde",
+    "peenda", "peendi", "peende",
+    "khanda", "khandi", "khande",
+    "unda", "undi", "unde",
+    "renda", "rendi", "rende",
+    "chal",
+    # ── distinctly Punjabi nouns / words ─────────────────────────────────────
+    "gall", "galla",          # matter/talk (Hindi: baat)
+    "wakhat",                 # time (Hindi: waqt variant)
+    "udeek",                  # wait (Hindi: intezaar)
+    "maada", "maadi",         # bad (Hindi: bura/buri)
+    "changi",                 # good-f (Hindi: achhi)
+    "bhala", "bhalaa",        # noble/good
+    "chakk", "chakko",        # take! (imperative)
+    "panj", "satt", "ath", "nau",  # five/seven/eight/nine
+    "paratha", "parontha",    # flatbread
+    "kadhi",                  # yogurt curry
+    "sarson", "gur",          # mustard / jaggery
+    "kheer",                  # rice pudding
+    "nimbu",                  # lemon
+    "reh",                    # stay (Punjabi imperative)
+    "le",                     # take (Punjabi)
+    "aa",                     # come (Punjabi imperative)
+    "puchh", "puchho",        # ask (Punjabi)
+    "rehn",                   # to stay/remain
+    "aaunde", "jaande",       # coming/going (plural habitual)
+    "sachchi", "pakki",       # truly/certainly (Punjabi emphasis)
 }
 
 ROMAN_MARWADI_MARKERS = {
-    "thara", "tharo", "mhare", "mhaari", "kai", "padharo",
+    # ── pronouns / possessives (distinctly Marwadi) ──────────────────────────
+    "mhane", "mharo", "mhari", "mhara", "mhare", "mhaari",
+    "thane", "tharo", "thari", "thara", "thaara", "thaari", "thaaro",
+    "aapan", "aapne", "aapro", "aapri",
+    "amara", "amari", "amaro",
+    "oda", "odi", "yeda", "yedi",
+    "keno", "keni", "karo", "kari", "jiko", "jiki",
+    # ── genitive particles (ro/ri/ra = Hindi ka/ki/ke) ───────────────────────
+    "ro", "ri", "ra",
+    # ── postpositions (Marwadi-specific) ─────────────────────────────────────
+    "su", "syu", "soo",
+    "lagi", "laagi",
+    "sathe", "saathai",
+    "aagai", "pachhai",
+    "thalay", "thale",
+    "paasey", "paase",
+    # ── demonstratives ───────────────────────────────────────────────────────
+    "itno", "itni", "utno", "utni",
+    "ketro", "ketri", "jetro", "jetri",
+    # ── question words (Marwadi-specific) ────────────────────────────────────
+    "koon", "kun", "kayse",
+    "kyaan", "kyan",
+    "kad", "kadai", "kadey",
+    "kairo", "kairi",
+    "kanto", "kitro",
+    # ── copula / aux (chhe = is/are, highly distinctive) ────────────────────
+    "chhe", "che", "chho", "chu", "chhun", "chha",
+    "hto", "hti", "hata", "hati",
+    "thayo", "thayi", "huve", "huvu",
+    # ── verb forms (Marwadi inflections -yo/-yi endings) ────────────────────
+    "avyo", "avyi", "aavyo", "aavyi",
+    "karyo", "karyi", "karyu",
+    "gayio", "gayu", "gayiu",
+    "aayo", "aayi",
+    "jaasyu", "jaasi", "jaasyo",
+    "karso", "karsi",
+    "leyo", "leyi", "diyo", "diyi", "khayi",
+    "jaavo", "aavo", "levo", "devo", "khavo", "revo",
+    "padvano", "daudvo", "hasvo", "rovano", "mangvo",
+    "milvo", "samjhvo", "jaanvo", "dekhavo", "laavo",
+    "chalvo", "thakvo",
+    "raheyo", "rahiyo", "basi",
+    # ── greetings / address ──────────────────────────────────────────────────
+    "khamma", "padharo",
+    "baisa", "baaisa", "bhaisa", "bhaiji",
+    "maasa", "bapusa", "babosa",
+    "kaka", "kaki", "sethji",
+    "sa", "saa",
+    # ── quantifiers (ghano = bahut, distinctly Marwadi) ─────────────────────
+    "ghano", "ghanu", "ghani", "ghana",
+    "thodo", "thodi",
+    # ── numbers (Marwadi variants) ────────────────────────────────────────────
+    "be",       # two (Hindi: do)
+    "tran",     # three (Hindi: teen)
+    "nav",      # nine (Hindi: nau)
+    "hajar",    # thousand (Hindi: hazaar)
+    # ── distinct lexical words ───────────────────────────────────────────────
+    "chhoro", "chhori",   # boy/girl (Hindi: ladka/ladki)
+    "moto", "moti",       # big (Hindi: bada/badi)
+    "nano", "nani",       # small (Hindi: chhota/chhoti)
+    "rotlo",              # thick millet flatbread (Marwadi)
+    "baati",              # baked wheat ball (Rajasthani)
+    "churma",             # sweet wheat prep (Marwadi)
+    "dhandho",            # business/trade (Marwadi-Gujarati)
+    "lekho", "lekha",     # account ledger (merchant term)
+    "hundi",              # bill of exchange (Marwari banking)
+    "sahukar",            # moneylender
+    "nakad",              # cash (Hindi: naqdh)
+    "mol", "molbhav",     # price/bargaining
+    "kuvo",               # well (Hindi: kuan)
+    "talai",              # pond (Hindi: talab)
+    "savero",             # morning (Hindi: subah)
+    "dophar",             # afternoon
+    "sanjh",              # evening
+    "tadi",               # early dawn
+    "sidho",              # straight (Hindi: seedha)
+    "ghani",              # very (adjective fem; Hindi: bahut)
+    "hun", "haaley",      # now/right now
+    "kad", "kadai",       # when (Hindi: kab)
+    "kyaan",              # where (Hindi: kahan)
+    "kirpa",              # grace/blessing
+    "aabhar",             # thank you (formal Rajasthani)
+    "manas",              # person/human
+    "kaado",              # mud/clay (Hindi: keechad)
+    "uunt", "unt",        # camel
+    "pagdi", "pagri",     # turban
+    "odhni", "odhai",     # head covering
+    "mojdi", "mojri",     # embroidered shoes (Rajasthani)
+    "haveli",             # mansion
+    "mela",               # fair/festival gathering
+    "roj", "rozana",      # daily
+    "hafto",              # week
+    "mahino",             # month
+    "baras",              # year (Hindi: saal)
+    "paso",               # day before/after yesterday
+    "ar", "aar",          # and (Hindi: aur — Marwadi form)
+    "jad",                # when (Marwadi)
+    "jyanh",              # where (Marwadi)
+    "ayaan", "iythaan",   # here
+    "utthaan",            # there
+    "aadai", "udai",      # here/there (directional)
+    "bai",                # honorific (sister/ma'am)
+    "bapu",               # father
+    "jai",                # victory/greeting prefix
+    "padharo",            # welcome (come inside)
+    "acho", "achho",      # good/okay (Marwadi form)
+    "chhad",              # leave it/let go
+    # ── more Marwadi verb infinitives (-vano/-no endings) ────────────────────
+    "bolvano", "sunvano", "dekhvano",
+    "khanvano", "pivano", "sovano",
+    "uthvano", "bethvano",
+    # ── more merchant / cultural vocabulary ──────────────────────────────────
+    "rokda",              # cash (Marwadi-Gujarati; different from nakad)
+    "khaata",             # account ledger
+    "hisaab",             # calculation/account
+    "vyapar",             # business (formal)
+    "bopari",             # trader/merchant
+    "ghewar",             # iconic Rajasthani sweet
+    "malpua",             # Rajasthani sweet
+    "rabdi",              # sweet milk dish
+    # ── more social / conditional particles ──────────────────────────────────
+    "bayaan", "bayani",   # brother/sister (Marwadi)
+    "je",                 # if (Marwadi; Hindi: agar)
+    "bhagwan",            # God
+    "dhandha",            # business (variant)
+}
+
+
+# Marwadi-specific words in Devanagari — used to distinguish Marwadi from
+# standard Hindi when Devanagari script is detected in the text.
+# Source: Grierson "Linguistic Survey of India" Vol. IX, CIIL Marwari materials.
+DEVANAGARI_MARWADI_MARKERS = {
+    "म्हारो", "म्हारी", "म्हाने", "म्हारा",   # my (Hindi: मेरा/मेरी)
+    "थारो", "थारी", "थाने", "थारा",             # your (Hindi: तेरा/तुम्हारा)
+    "घणो", "घणी", "घणा",                         # very/much (Hindi: बहुत)
+    "छोरो", "छोरी",                              # boy/girl (Hindi: लड़का/लड़की)
+    "कठे", "कठै",                                # where (Hindi: कहाँ)
+    "कद", "कदे",                                 # when (Hindi: कब)
+    "खम्मा",                                     # greeting (unique Marwadi)
+    "पधारो",                                     # welcome (Hindi: पधारिए)
+    "छे", "चे",                                  # is/are copula (Hindi: है)
+    "मोटो", "मोटी",                              # big (Hindi: बड़ा/बड़ी)
+    "नानो", "नानी",                              # small (Hindi: छोटा/छोटी)
+    "सूँ", "सूं",                                # from/with (Hindi: से)
+    "आपरो", "आपरी", "आपरा",                     # our (Hindi: हमारा)
+    "जको", "जकी",                                # whoever (relative pronoun)
+    "घर रो", "घर री",                            # genitive constructions
+    "आगाई", "पाछाई",                             # front/back
+    "कुवो",                                      # well (Hindi: कुआँ)
+    "छोरा", "छोरां",                             # boys/plural
+    "हुवो", "हुई",                               # happened (Marwadi perfective)
+    "जावणो", "आवणो",                             # to go/come (Marwadi infinitive)
+    "करणो", "बोलणो",                             # to do/speak
+    "थको", "थकी",                                # tired (Marwadi form)
 }
 
 
@@ -134,8 +520,30 @@ def _tokenise(text: str) -> List[str]:
     return re.findall(r"[\w']+", text.lower())
 
 
+def _probe_marwadi_devanagari(text: str) -> float:
+    """Return confidence [0, 1] that Devanagari text is Marwadi, not Hindi.
+
+    Checks for Marwadi-specific Devanagari tokens: distinctive pronouns
+    (म्हारो/थारो), copula (छे), quantifier (घणो), etc.  Even 1-2 hits in a
+    short segment is strong evidence because these forms don't appear in
+    standard Hindi.
+    """
+    if not text.strip():
+        return 0.0
+    # Tokenise on whitespace + Devanagari danda (।) and common punctuation.
+    tokens = set(re.split(r"[\s।॥,।.!?]+", text))
+    hits = sum(1 for m in DEVANAGARI_MARWADI_MARKERS if m in tokens or m in text)
+    if hits == 0:
+        return 0.0
+    return min(1.0, hits / max(len(tokens), 1) * 6)
+
+
 def _roman_indic_probe(tokens: List[str]) -> Tuple[str, float]:
-    """Return (language_code, strength) if enough Indic markers found."""
+    """Return (language_code, strength) if enough Indic markers found.
+
+    Tie-breaking: Marwadi > Punjabi > Hindi.  Hindi is the default ASR fallback
+    so specificity is rewarded; we only override when evidence is clear.
+    """
     if not tokens:
         return ("en", 0.0)
     hits_hi = sum(1 for t in tokens if t in ROMAN_HINDI_MARKERS)
@@ -143,9 +551,14 @@ def _roman_indic_probe(tokens: List[str]) -> Tuple[str, float]:
     hits_mw = sum(1 for t in tokens if t in ROMAN_MARWADI_MARKERS)
 
     total = len(tokens)
-    best = max((hits_hi, "hi-Latn"), (hits_pa, "pa-Latn"), (hits_mw, "mwr-Latn"),
-               key=lambda x: x[0])
-    hits, lang = best
+    # Secondary sort key (0/1/2) breaks ties toward more specific languages.
+    best = max(
+        (hits_hi, 0, "hi-Latn"),
+        (hits_pa, 1, "pa-Latn"),
+        (hits_mw, 2, "mwr-Latn"),
+        key=lambda x: (x[0], x[1]),
+    )
+    hits, _, lang = best
     ratio = hits / max(total, 1)
     if hits >= 2 and ratio >= 0.05:
         return (lang, min(1.0, ratio * 4))
@@ -162,6 +575,9 @@ def _classify_segment_language(
     seg_tokens = _tokenise(text)
 
     if "Devanagari" in seg_scripts:
+        mw_conf = _probe_marwadi_devanagari(text)
+        if mw_conf >= 0.25:
+            return ("mwr", max(0.70, mw_conf))
         return ("hi", 0.9)
     if "Gurmukhi" in seg_scripts:
         return ("pa", 0.9)
@@ -269,11 +685,19 @@ def detect_language(
 
     # Script-based global baseline.
     if "Devanagari" in scripts and "Latin" not in scripts:
-        primary, conf = "hi", 0.9
+        mw_conf = _probe_marwadi_devanagari(full_text)
+        if mw_conf >= 0.25:
+            primary, conf = "mwr", max(0.70, mw_conf)
+        else:
+            primary, conf = "hi", 0.9
     elif "Gurmukhi" in scripts and "Latin" not in scripts:
         primary, conf = "pa", 0.9
     elif "Devanagari" in scripts and "Latin" in scripts:
-        primary, conf = "hi", 0.75
+        mw_conf = _probe_marwadi_devanagari(full_text)
+        if mw_conf >= 0.25:
+            primary, conf = "mwr", max(0.65, mw_conf)
+        else:
+            primary, conf = "hi", 0.75
     elif "Gurmukhi" in scripts and "Latin" in scripts:
         primary, conf = "pa", 0.75
     else:
