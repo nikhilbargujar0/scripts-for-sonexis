@@ -49,17 +49,32 @@ def compute_total_speech_duration(speech_segments) -> float:
 
 
 _LANG_PROMPTS: Dict[str, str] = {
+    # Pure Hindi — short, neutral, no code-switch bias.
     "hi": (
+        "यह एक हिंदी बातचीत है। "
+        "वक्ता हिंदी में बोल रहे हैं।"
+    ),
+    # Hinglish — explicitly signals Hindi-English mixing so Whisper does
+    # not hallucinate one language over the other.
+    "hinglish": (
         "यह हिंदी और अंग्रेजी मिश्रित (Hinglish) बातचीत है। "
         "वक्ता हिंदी और अंग्रेजी दोनों में बोलते हैं। "
-        "This is a Hinglish conversation mixing Hindi and English."
+        "This is a Hindi-English mixed conversation."
+    ),
+    # Marwadi — Devanagari script; Whisper uses the Hindi model.
+    "mwr": (
+        "यह एक राजस्थानी / मारवाड़ी बातचीत है। "
+        "वक्ता मारवाड़ी और हिंदी मिश्रित भाषा में बोल सकते हैं।"
     ),
     "ta": "இது தமிழ் மற்றும் ஆங்கிலம் கலந்த உரையாடல்.",
     "te": "ఇది తెలుగు మరియు ఇంగ్లీష్ మిశ్రిత సంభాషణ.",
     "mr": "हे मराठी आणि इंग्रजी मिश्रित संभाषण आहे.",
     "bn": "এটি বাংলা এবং ইংরেজি মিশ্রিত কথোপকথন।",
     "gu": "આ ગુજરાતી અને અંગ્રેજી મિશ્રિત વાર્તાલાપ છે.",
-    "pa": "ਇਹ ਪੰਜਾਬੀ ਅਤੇ ਅੰਗਰੇਜ਼ੀ ਮਿਸ਼ਰਤ ਗੱਲਬਾਤ ਹੈ।",
+    "pa": (
+        "ਇਹ ਇੱਕ ਪੰਜਾਬੀ ਗੱਲਬਾਤ ਹੈ। "
+        "ਬੁਲਾਰੇ ਪੰਜਾਬੀ ਅਤੇ ਕਦੇ-ਕਦੇ ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਬੋਲ ਸਕਦੇ ਹਨ।"
+    ),
 }
 
 
@@ -67,6 +82,20 @@ _GENERIC_MULTILINGUAL_PROMPT = (
     "This conversation may include Hindi, English, or other Indian languages. "
     "यह बातचीत हिंदी, अंग्रेजी या अन्य भारतीय भाषाओं में हो सकती है।"
 )
+
+# Map logical / dialect codes → BCP-47 codes accepted by faster-whisper.
+# Whisper has no "hinglish" or "mwr" model; Hindi is the closest.
+_WHISPER_LANG_ALIASES: Dict[str, str] = {
+    "hinglish": "hi",
+    "mwr": "hi",   # Marwadi written in Devanagari; Hindi model is closest
+}
+
+
+def _normalise_whisper_language(language: Optional[str]) -> Optional[str]:
+    """Return the faster-whisper-compatible language code for *language*."""
+    if not language:
+        return language
+    return _WHISPER_LANG_ALIASES.get(language.lower(), language)
 
 
 def _resolve_initial_prompt(cfg: PipelineConfig) -> Optional[str]:
@@ -91,7 +120,7 @@ def build_asr_cfg(cfg: PipelineConfig, model_dir: Optional[str]) -> ASRConfig:
         model_size=cfg.model_size,
         compute_type=compute_type,
         device=device,
-        language=cfg.language,
+        language=_normalise_whisper_language(cfg.language),
         offline_mode=cfg.offline_mode,
         model_path=model_path,
         beam_size=cfg.beam_size,

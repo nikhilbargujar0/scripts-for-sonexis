@@ -205,6 +205,90 @@ class PipelineConfig:
         defaults.update(kwargs)
         return cls(**defaults).resolve()
 
+    @classmethod
+    def indic_defaults(cls, language: str, **kwargs) -> "PipelineConfig":
+        """Config tuned for Indian languages to maximise accuracy.
+
+        Targets 97-99 % WER on Hindi, Hinglish, Marwadi, and Punjabi by:
+          - Upgrading to ``large-v3`` (biggest single accuracy gain)
+          - Passing the correct Whisper language code (``hinglish`` and
+            ``mwr`` both map to ``hi`` since Whisper has no separate codes)
+          - Injecting a language-specific initial_prompt that cuts WER on
+            code-switched and dialectal audio
+          - Raising beam_size to 10 (marginal extra accuracy at cost of speed)
+          - Enabling light noise reduction (denoise=True)
+          - Enabling WhisperX forced-alignment for sub-word timestamps
+          - Setting pipeline_mode="premium_accuracy" for per-speaker
+            consensus and timestamp refinement
+
+        Args:
+            language: ``'hi'``, ``'hinglish'``, ``'mwr'``, or ``'pa'``.
+                      Any BCP-47 code supported by faster-whisper also works
+                      (e.g. ``'en'``, ``'ta'``).
+            **kwargs: Override any PipelineConfig field, e.g.
+                      ``model_size='medium'``, ``beam_size=5``.
+
+        Example::
+
+            cfg = PipelineConfig.indic_defaults("hinglish")
+            cfg = PipelineConfig.indic_defaults("pa", model_size="medium")
+        """
+        # Map logical language names → Whisper BCP-47 codes.
+        # faster-whisper does not recognise "hinglish" or "mwr".
+        _whisper_lang: Dict[str, str] = {
+            "hi": "hi",
+            "hinglish": "hi",   # Hindi model; prompt steers code-switching
+            "mwr": "hi",        # Marwadi → closest Whisper model is Hindi
+            "pa": "pa",
+        }
+        # Language-specific initial prompts guide Whisper decoding.
+        _prompts: Dict[str, str] = {
+            "hi": (
+                "यह एक हिंदी बातचीत है। "
+                "वक्ता शुद्ध हिंदी में बोल रहे हैं।"
+            ),
+            "hinglish": (
+                "यह हिंदी और अंग्रेजी मिश्रित (Hinglish) बातचीत है। "
+                "वक्ता हिंदी और अंग्रेजी दोनों में बोलते हैं। "
+                "This is a Hindi-English mixed conversation."
+            ),
+            "mwr": (
+                "यह एक राजस्थानी / मारवाड़ी बातचीत है। "
+                "वक्ता मारवाड़ी और हिंदी मिश्रित भाषा में बोल सकते हैं।"
+            ),
+            "pa": (
+                "ਇਹ ਇੱਕ ਪੰਜਾਬੀ ਗੱਲਬਾਤ ਹੈ। "
+                "ਬੁਲਾਰੇ ਪੰਜਾਬੀ ਅਤੇ ਕਦੇ-ਕਦੇ ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਬੋਲ ਸਕਦੇ ਹਨ।"
+            ),
+        }
+        lang_key = language.lower()
+        whisper_lang = _whisper_lang.get(lang_key, lang_key)
+        prompt = _prompts.get(lang_key)
+
+        defaults: Dict = dict(
+            offline_mode=False,
+            device="auto",
+            model_size="large-v3",
+            beam_size=10,
+            language=whisper_lang,
+            initial_prompt=prompt,
+            denoise=True,
+            ask_metadata=False,
+            input_type="speaker_folders",
+            pipeline_mode="premium_accuracy",
+        )
+        defaults.update(kwargs)
+        cfg = cls(**defaults).resolve()
+
+        # Enable WhisperX forced-alignment unless caller passed a custom
+        # premium dict.  Deep-copy to avoid mutating the class-level default.
+        if "premium" not in kwargs:
+            cfg.premium = copy.deepcopy(cfg.premium)
+            cfg.premium["enabled"] = True
+            cfg.premium.setdefault("alignment", {})["whisperx_enabled"] = True
+
+        return cfg
+
     def to_dict(self) -> dict:
         return asdict(self)
 
